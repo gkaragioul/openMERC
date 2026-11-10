@@ -39,6 +39,7 @@ void SNDH_ParseSound(void);
 void SNDH_ParseSoundInfo(int flags);
 /* per-frame player-state values: general ambient set, music mode */
 void SNDH_SetPlayerAudio(int ambientset, int musicmode);
+void SNDH_MenuMusic(const char *set); /* RLabs: music behind the main menu; NULL fades it out */
 /* the client is shutting down (sound struct #3 +0x24) */
 void SNDH_SetShuttingDown(qboolean down);
 /* the loaded module's name, "" when none */

@@ -21,6 +21,8 @@ struct SynNode
 	bool noblock = false;
 	bool hiddenFromFrame = false;
 	uint32_t hideFrom = 0;
+	bool sprite = false;
+	bool spriteball = false;
 };
 
 struct SynEvent
@@ -43,6 +45,9 @@ struct SynModel
 	std::vector<SynNode> nodes; // nulls and meshes (meshes get one quad each)
 	float quadX = 0;            // meshes: a 2x2 quad in the YZ plane at x = quadX + mesh index
 	std::string material = "MAT1";
+	bool alphaTexture = false;
+	uint32_t blend = 0;
+	float opacity = 1.0f;
 	// LIGHT records with constant tracks (SPEC-AMEND-005 I3.10): kind; brightness 0.5 + 0.1 * index, the extra
 	// tracks of kinds 1-4 filled with 9s
 	std::vector<uint32_t> lightKinds;
@@ -139,8 +144,8 @@ inline std::vector<uint8_t> BuildSynthetic(const SynModel &m)
 	w.U32(1);
 	w.S(m.material);
 	w.U8(0);
-	w.U8(0);
-	w.U32(0);
+	w.U8(m.alphaTexture ? 1 : 0);
+	w.U32(m.blend);
 	w.U32(2);
 	float ident[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 	for (int sl = 0; sl < 2; sl++)
@@ -165,7 +170,7 @@ inline std::vector<uint8_t> BuildSynthetic(const SynModel &m)
 	w.F(1);
 	w.F(1);
 	w.F(1);
-	float props[4] = {0, 0, 0, 1};
+	float props[4] = {0, 0, 0, m.opacity};
 	for (float p : props)
 	{
 		w.U8(1);
@@ -195,8 +200,8 @@ inline std::vector<uint8_t> BuildSynthetic(const SynModel &m)
 			for (auto x : words)
 				w.U32(x);
 		}
-		w.U8(0);
-		w.U8(0);
+		w.U8(n.sprite ? 1 : 0);
+		w.U8(n.spriteball ? 1 : 0);
 		w.U8(n.noblock ? 1 : 0);
 		w.Bounds(-100, 100);
 		w.U32(0);

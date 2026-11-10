@@ -1656,6 +1656,11 @@ SCR_SoF_Frame(void)
 		SCR_DrawConsole();
 		SCR_SoF_DrawNet();
 	}
+	else if (CL_MenuScene_Render())
+	{
+		/* RLabs: the live level behind the main menu (cl_menuscene.c) */
+		HUD_Set2D();
+	}
 	else
 	{
 		R_EndWorldRenderpass();

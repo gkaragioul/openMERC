@@ -2089,6 +2089,17 @@ HUD_Terrain_f(void)
 	}
 }
 
+/* SPEC-002 map registration step 6: the level's terrain set (CS_TERRAINSET, the landscape outside the train of trn1).
+   Nothing called this at map start, so the set was only ever loaded by the console command (play-test 2026-11-08). */
+void
+HUD_SelectLevelTerrain(void)
+{
+	if (CL_SoF_Active() && HUD_Ref() && sre->SetTerrain)
+	{
+		sre->SetTerrain((char *)CL_SoF_ConfigString(14));
+	}
+}
+
 static void
 HUD_Cloud_f(void)
 {

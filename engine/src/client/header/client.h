@@ -512,6 +512,18 @@ extern	int			gun_frame;
 extern	struct model_s	*gun_model;
 
 void V_Init (void);
+
+/* RLabs: live level behind the main menu (cl_menuscene.c) */
+void CL_MenuScene_Init(void);
+void CL_MenuScene_Forget(void);
+qboolean CL_MenuScene_Active(void);
+qboolean CL_MenuScene_Render(void);
+float CL_MenuScene_Fade(void);
+void CL_MenuScene_Frame(void);
+
+/* RLabs: the three graphics settings (cl_graphics.c) */
+void CL_Graphics_Init(void);
+void CL_Graphics_Frame(void);
 void V_RenderView( float stereo_separation );
 void V_AddEntity (entity_t *ent);
 void V_AddParticle (vec3_t org, unsigned int color, float alpha);
@@ -541,7 +553,8 @@ void M_Draw (void);
 void M_Menu_Main_f (void);
 void M_ForceMenuOff (void);
 void M_AddToServerList (netadr_t adr, char *info);
-void M_MouseMove (int dx, int dy); /* OpenMerc (I6m): menu pointer movement, raw pixels (SPEC-801 7.2) */
+void M_MouseMove (float dx, float dy); /* OpenMerc (I6m): menu pointer movement, raw pixels (SPEC-801 7.2) */
+void M_MouseAt (float px, float py); /* RLabs: menu pointer at a window position in drawable pixels */
 
 void CL_ParseInventory (void);
 void CL_DrawInventory (void);

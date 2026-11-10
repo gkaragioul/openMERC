@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 #include "ghoul_gl.h"
@@ -104,6 +105,7 @@ struct DrawCtx
 {
 	GhoulRenderParams *P;
 	const GhoulGLTable *g;
+	const om_ghoul_native_sink_t *nativeSink = nullptr;
 	System *sys;
 	bool shadowOnly;
 	float time;
@@ -343,6 +345,68 @@ static Vec3 LightVertex(const Vec3 &p, const Vec3 &n, const Vec3 &ambient, const
 	return c;
 }
 
+/* The GL hardware-light route is not the software-light route with a global
+ * brightness adjustment.  In method 3 it supplies light-model ambient plus
+ * per-light diffuse terms, scales world lights by (1 - LIGHT_AMBIENT), and
+ * uses GL's linear attenuation.  Keep this explicit for direct native sinks
+ * instead of depending on a fixed-function state machine. */
+static Vec3 HardwareLightVertex(const Vec3 &p, const Vec3 &n, const Vec3 &ambient,
+	const std::vector<ActiveLight> &lights, const GhoulRenderParams *P,
+	const Matrix4 &model, const Matrix4 &inverse, const Matrix4 &lightModel, bool localViewer,
+	bool specular, float shininess, float level, const Vec3 &specColour, Vec3 &specOut)
+{
+	Vec3 c = ambient;
+	specOut = Vec3();
+	Vec3 worldPosition = XformPoint(p, model);
+	/* Fixed-function normals use inverse transpose, without normalization.
+	 * Work in world space: rotating everything into eye space leaves the
+	 * dot products unchanged and requires no backend matrix state. */
+	Vec3 worldNormal(Dot(n, Vec3(inverse.m[0])), Dot(n, Vec3(inverse.m[1])), Dot(n, Vec3(inverse.m[2])));
+	Vec3 viewer = localViewer ? Normalize(Vec3(P->viewOrigin) - worldPosition) : -Normalize(Vec3(P->viewForward));
+	int lightCount = 0;
+	for (const ActiveLight &l : lights)
+	{
+		if (lightCount++ == 8) break; /* the hardware reference installs GL_LIGHT0..7 */
+		Vec3 direction;
+		float attenuation = 1.0f;
+		if (P->glDirectional || l.kind == kDirectional || l.kind == kWrap)
+		{
+			direction = Normalize(XformVector(l.kind == kDirectional || l.kind == kWrap ? l.dir : l.pos, lightModel));
+		}
+		else
+		{
+			/* GL installs lights under W, before a surface's billboard rotation. */
+			Vec3 delta = XformPoint(l.pos, lightModel) - worldPosition;
+			float distance = Length(delta);
+			if (distance <= 0.0f)
+				continue;
+			direction = delta * (1.0f / distance);
+			if (P->glAttenuation)
+			{
+				float range = l.kind == kModelOmni ? l.start : l.radius;
+				if (range > 0.0f)
+					attenuation = 1.0f / (1.0f + distance / range);
+			}
+		}
+		float ndotl = Dot(worldNormal, direction);
+		if (ndotl <= 0.0f)
+			continue;
+		float scale = l.kind == kModelOmni ? 1.0f : 1.0f - G().gs.lightAmbient;
+		c += l.color * (scale * attenuation * ndotl);
+		if (specular)
+		{
+			Vec3 half = Normalize(direction + viewer);
+			float nh = Dot(worldNormal, half);
+			if (nh > 0.0f)
+			{
+				float strength = scale * attenuation * level * (shininess > 0 ? std::pow(nh, shininess) : 1.0f);
+				specOut += Vec3(l.color.x * specColour.x, l.color.y * specColour.y, l.color.z * specColour.z) * strength;
+			}
+		}
+	}
+	return c;
+}
+
 // ------------------------------------------------------------------ shadow mask
 
 // SPEC-AMEND-005 I3.8: orthographic projection onto the plane through the origin perpendicular to the light axis:
@@ -390,8 +454,473 @@ static void BloomSource(const GhoulGLTable *g, float w)
 	}
 }
 
+/* Direct native base-material path.  It deliberately receives completed
+ * triangles after the Ghoul library has evaluated pose, material, culling and
+ * texture selection.  This is not a GL call recorder: the sink's data has no
+ * GL enum or GL-state-table dependency.  Specular, translucent and shadow
+ * passes stay on their explicit later native phases. */
+/* `Matrix4` uses the same physical layout passed to the legacy GL table, so
+ * this axis rotation is the direct CPU equivalent of `glRotatef`. */
+static Matrix4 NativeAxisRotation(float degrees, float x, float y, float z)
+{
+	Matrix4 r;
+	MatIdentity(r);
+	float length = std::sqrt(x * x + y * y + z * z);
+	if (length <= 0.0f)
+		return r;
+	x /= length;
+	y /= length;
+	z /= length;
+	float radians = degrees * 3.14159265358979323846f / 180.0f;
+	float c = std::cos(radians), s = std::sin(radians), t = 1.0f - c;
+	r.m[0][0] = t * x * x + c;
+	r.m[0][1] = t * x * y + s * z;
+	r.m[0][2] = t * x * z - s * y;
+	r.m[1][0] = t * x * y - s * z;
+	r.m[1][1] = t * y * y + c;
+	r.m[1][2] = t * y * z + s * x;
+	r.m[2][0] = t * x * z + s * y;
+	r.m[2][1] = t * y * z - s * x;
+	r.m[2][2] = t * z * z + c;
+	r.flags = 0;
+	return r;
+}
+
+/* GL applies W, then N/rotation/N-inverse on its matrix stack.  In the
+ * native path W remains the renderer model matrix, so apply the local
+ * billboard transform to vertices before crossing the C sink boundary. */
+static Matrix4 NativeBillboardTransform(const GhbFile &f, const GhbNode &nd,
+	const Pose &p, const Vec3 &viewerModel)
+{
+	Matrix4 n;
+	f.NodeMatrixPose(nd, p.fp, n);
+	Matrix4 ni = MatInverse(n);
+	Vec3 v = Normalize(XformPoint(viewerModel, ni));
+	/* These matrices act on row vectors (XformPoint), so the leftmost is applied first; the GL stack's last
+	   multiplied matrix is applied first. GL's N, yaw, pitch, N-inverse is therefore N-inverse, pitch, yaw, N here:
+	   the glow turns about its own node (RLabs 2026-11-08: the opposite order threw headlight and lamp glows far
+	   from their lamps; a node at the model origin hid it). */
+	Matrix4 out = ni;
+	if (nd.spriteball)
+		out = MatMul(out, NativeAxisRotation(std::atan2(-v.y, std::sqrt(v.x * v.x + v.z * v.z)) * 57.2957795f, 1, 0, 0));
+	out = MatMul(out, NativeAxisRotation(-std::atan2(-v.z, -v.x) * 57.2957795f - 90.0f, 0, 1, 0));
+	return MatMul(out, n);
+}
+
+/* Implements: SPEC-012 section 8. Both draw backends sample the same material
+ * track; the native sink bakes the texture matrix into explicit coordinates. */
+static Matrix4 MaterialTextureMatrix(const GhbSlot &slot, const Pose &p)
+{
+	if (slot.uv.constant || slot.uv.v.size() <= 1)
+		return slot.uv.v[0];
+	if (!p.adjacent)
+		return slot.uv.At(p.fp.a);
+	Matrix4 out;
+	const Matrix4 &a = slot.uv.At(p.fp.a), &b = slot.uv.At(p.fp.b);
+	for (int r = 0; r < 4; r++)
+		for (int k = 0; k < 4; k++)
+			out.m[r][k] = b.m[r][k] + (a.m[r][k] - b.m[r][k]) * p.fp.w;
+	out.flags = 0;
+	return out;
+}
+
+/* Optional bounded CPU-boundary trace, shared by the two backends. This is
+ * diagnostic data from GPL model inputs; no GL state is replayed natively. */
+static void TraceMaterial(const char *backend, const GhbFile &f, const GhbMaterial &m,
+	const GhoulRenderParams *P, const Vec3 &position, const Vec3 &normal,
+	const Vec3 &colour, const Texture *tex, const std::vector<ActiveLight> &lights)
+{
+	static int lines;
+	if (!std::getenv("OM_GHOUL_MATERIAL_TRACE") || lines >= 256 ||
+		f.dir.find("SHOTGUN") == std::string::npos)
+		return;
+	lines++;
+	uint32_t hash = 2166136261u;
+	if (tex)
+		for (uint8_t b : tex->rgba)
+			hash = (hash ^ b) * 16777619u;
+	Print("ghoul material %s t %.6f mat %s pos %.4f %.4f %.4f normal %.4f %.4f %.4f colour %.4f %.4f %.4f texhash %08x lights %d\n",
+		backend, P->time, m.name.c_str(), position.x, position.y, position.z,
+		normal.x, normal.y, normal.z, colour.x, colour.y, colour.z, hash, (int)lights.size());
+	Print("ghoul slot environment %d staticUV %d\n", m.slots[0].environment ? 1 : 0, m.slots[0].staticUV ? 1 : 0);
+	for (const ActiveLight &l : lights)
+		Print("ghoul light %d pos %.3f %.3f %.3f colour %.3f %.3f %.3f radius %.3f\n",
+			(int)l.kind, l.pos.x, l.pos.y, l.pos.z, l.color.x, l.color.y, l.color.z, l.radius);
+}
+
+static void DrawOwnNative(Inst *in, DrawCtx &c, const Pose &p, const Matrix4 &W)
+{
+	const om_ghoul_native_sink_t *sink = c.nativeSink;
+	GhoulRenderParams *P = c.P;
+	GhbFile &f = *p.file;
+	Object *o = in->obj;
+	if (!sink || !sink->draw || !f.hasGeometry)
+		return;
+
+	std::vector<float> apos, anorm, atex;
+	EvalGeometry(f, p.fp, apos, anorm, atex);
+	const GhbGeometry &geo = f.geo;
+	Matrix4 Wi = MatInverse(W);
+	Vec3 viewerModel = XformPoint(Vec3(P->viewOrigin), Wi);
+	/* A native renderer owns the final draw call, but not a second lighting
+	 * model. Build the same model-space ambient and active-light set used by
+	 * the GL path below, then evaluate it per vertex before exporting colours. */
+	RenderCache &rc = in->rc;
+	if (rc.valid && c.time - rc.lastDraw > 0.15f)
+		rc.Reset();
+	Vec3 lightColor(P->lightColor);
+	std::vector<ActiveLight> lights;
+	Vec3 ambient;
+	bool dynAllowed = !P->noDynamicLights && !c.shadowOnly;
+	Box3 worldBox;
+	int own = 0;
+	if (dynAllowed)
+	{
+		const BoundsRec &bb = p.file->bounds;
+		bool boxed = !bb.infinite && !bb.empty;
+		for (const ActiveLight &sl : c.shared)
+		{
+			ActiveLight a = sl;
+			a.pos = XformPoint(sl.pos, Wi);
+			if (boxed)
+			{
+				float d2 = 0.0f;
+				for (int k = 0; k < 3; k++)
+				{
+					float v = a.pos[k] < bb.mn[k] ? bb.mn[k] - a.pos[k] : (a.pos[k] > bb.mx[k] ? a.pos[k] - bb.mx[k] : 0.0f);
+					d2 += v * v;
+				}
+				if (d2 > a.end * a.end)
+					continue;
+			}
+			lights.push_back(a);
+			own++;
+		}
+		if (std::find(c.gathered.begin(), c.gathered.end(), in) != c.gathered.end())
+			worldBox.AddBox(f.bounds, W);
+	}
+	if (P->dirValid)
+	{
+		ambient = lightColor * 0.5f;
+		ActiveLight wrap;
+		wrap.kind = kWrap;
+		wrap.color = lightColor * 0.5f;
+		wrap.dir = Normalize(XformVector(Normalize(Vec3(P->lightDir)), Wi));
+		wrap.pos = XformPoint(Vec3(P->origin) + Vec3(P->lightDir), Wi);
+		lights.push_back(wrap);
+	}
+	else if (P->useGLLights)
+	{
+		ambient = lightColor * G().gs.lightAmbient;
+		int maxL = P->maxLights < 1 ? 1 : (P->maxLights > 8 ? 8 : P->maxLights);
+		GatherWorldLights(in, c, Vec3(P->origin), maxL, own, lights, Wi, P->fastLights != 0);
+	}
+	else
+		ambient = lightColor;
+	if (dynAllowed && worldBox.any)
+	{
+		for (auto &d : in->sys->dynLights)
+		{
+			Vec3 o3(d.origin);
+			bool inside = true;
+			for (int a = 0; a < 3; a++)
+				if (o3[a] < worldBox.mn[a] - d.radius || o3[a] > worldBox.mx[a] + d.radius)
+					inside = false;
+			if (!inside)
+				continue;
+			ActiveLight a;
+			a.color = Vec3(d.color);
+			a.radius = d.radius;
+			if (P->fastLights)
+			{
+				Vec3 dd = o3 - Vec3(P->origin);
+				float dist = Length(dd);
+				if (dist > d.radius || dist <= 0)
+					continue;
+				a.kind = kDirectional;
+				a.dir = Normalize(XformVector(dd * (1.0f / dist), Wi));
+				a.color = a.color * (dist <= 0.75f * d.radius ? 1.0f : (d.radius - dist) / (0.25f * d.radius));
+			}
+			else
+			{
+				a.kind = kPoint;
+				a.pos = XformPoint(o3, Wi);
+			}
+			lights.push_back(a);
+		}
+	}
+	rc.valid = true;
+	rc.lastDraw = c.time;
+	bool hw = P->hardwareLights && !lights.empty();
+	float alphaInst = in->tint[3] / 255.0f;
+	Vec3 tint(in->tint[0] / 255.0f, in->tint[1] / 255.0f, in->tint[2] / 255.0f);
+	bool tinted = Dot(tint - Vec3(1, 1, 1), tint - Vec3(1, 1, 1)) > 0.1f;
+	bool mirrored = MatDet3(W) < 0.0f;
+
+	for (auto &sf : geo.surfaces)
+	{
+		if (sf.node < 0 || sf.material >= f.materials.size() || sf.tris.empty())
+			continue;
+		const GhbNode &nd = f.nodes[sf.node];
+		int part = o->PartOfNode(&f, sf.node);
+		if ((part && !in->PartShown(part)) || !nd.visible.At(p.dominant))
+			continue;
+		f.usedNodes[sf.node] = 1;
+		Matrix4 billboard;
+		bool hasBillboard = nd.sprite;
+		if (hasBillboard)
+			billboard = NativeBillboardTransform(f, nd, p, viewerModel);
+		Matrix4 hardwareModel = hasBillboard ? MatMul(billboard, W) : W;
+		Matrix4 hardwareInverse = MatInverse(hardwareModel);
+		const GhbMaterial &m = f.materials[sf.material];
+		float alpha = BlendF(m.opacity, p.fp) * alphaInst;
+		if (alpha < 0.01f)
+			continue;
+
+		int mid = o->MaterialOf(&f, (int)sf.material);
+		ImageList *list = o->SlotList(&f, (int)sf.material, 0);
+		Texture *tex = nullptr;
+		const GhbSlot &s0 = m.slots[0];
+		if (list)
+		{
+			int skin = 0;
+			if (mid)
+			{
+				auto it = in->skinOverrides.find(std::make_pair(mid, part));
+				if (it == in->skinOverrides.end())
+					it = in->skinOverrides.find(std::make_pair(mid, 0));
+				if (it != in->skinOverrides.end())
+					skin = it->second;
+			}
+			int skinIndex = skin ? std::max(0, o->SkinImage(skin)) : 0;
+			int image = (int)s0.image.At(p.dominant) + skinIndex;
+			tex = ListTexture(list, image, true);
+		}
+		bool textured = tex && tex->decoded && s0.hasTexture;
+		bool uvMatrix = textured && !s0.staticUV && !P->noTextureStack;
+		Matrix4 textureMatrix;
+		if (uvMatrix)
+			textureMatrix = MaterialTextureMatrix(s0, p);
+		Vec3 base = textured ? Vec3(1, 1, 1) : Blend(m.diffuse, p.fp);
+		if (tinted)
+			base = Vec3(base.x * tint.x, base.y * tint.y, base.z * tint.z);
+		float selfIllum = BlendF(m.selfIllum, p.fp);
+		/* The direct sink owns no fixed-function lighting state, so export the
+		 * shared renderer's software-equivalent additive specular pass instead
+		 * of silently discarding it. */
+		float gloss = BlendF(m.gloss, p.fp), level = BlendF(m.specLevel, p.fp);
+		bool spec = o->specular && P->specular && gloss > 0.0f && level >= 0.051f && selfIllum < 0.99f;
+		float expo = std::pow(2.0f, 10.0f * gloss);
+		Texture *swSpecTex = nullptr;
+		Vec3 swSpecColor = Blend(m.specular, p.fp);
+		if (spec)
+		{
+			ImageList *specList = o->SlotList(&f, (int)sf.material, 1);
+			swSpecTex = specList ? ListTexture(specList, (int)m.slots[1].image.At(p.dominant), true) : nullptr;
+			if (swSpecTex && !swSpecTex->decoded)
+				swSpecTex = nullptr;
+			if (swSpecTex)
+				swSpecColor = Vec3(1, 1, 1);
+			swSpecColor = swSpecColor * P->fogVisibility;
+		}
+		if (hw)
+		{
+			/* SPEC-012: invalid (>128) hardware exponents leave the previous
+			 * material exponent in force, as in the reference. A non-specular
+			 * material explicitly resets it. */
+			if (!spec) G().nativeHardwareShininess = 0;
+			else if (4.0f * expo <= 128.0f) G().nativeHardwareShininess = 4.0f * expo;
+		}
+		/* Match the GL path's additive fog handling before the explicit native
+		 * blend state is handed to the renderer.  Additive blending uses a
+		 * premultiplied colour contribution and an opaque output alpha. */
+		Vec3 cmul(1, 1, 1);
+		if (m.blend == 1)
+		{
+			if (P->fogVisibility < 1.0f)
+				alpha *= P->fogVisibility;
+			if (alpha < 1.0f)
+			{
+				cmul = Vec3(alpha, alpha, alpha);
+				alpha = 1.0f;
+			}
+		}
+		bool blended = m.alphaTexture || alpha < 0.99f || m.blend != 0;
+
+		om_ghoul_native_texture_t nativeTexture = {};
+		if (textured)
+		{
+			nativeTexture.key = tex->name.c_str();
+			nativeTexture.width = tex->width;
+			nativeTexture.height = tex->height;
+			nativeTexture.has_alpha = tex->hasAlpha ? 1 : 0;
+			nativeTexture.nomip = tex->nomip ? 1 : 0;
+			nativeTexture.repeat_u = s0.tileU ? 1 : 0;
+			nativeTexture.repeat_v = s0.tileV ? 1 : 0;
+			nativeTexture.rgba = tex->rgba.data();
+		}
+
+		std::vector<om_ghoul_native_vertex_t> vertices;
+		vertices.reserve(sf.tris.size());
+		Vec3 firstNativeLight;
+		std::vector<om_ghoul_native_vertex_t> specVertices;
+		if (spec)
+			specVertices.reserve(sf.tris.size());
+		for (uint16_t ci : sf.tris)
+		{
+			int pi = geo.corners[ci * 3], ni = geo.corners[ci * 3 + 1], ti = geo.corners[ci * 3 + 2];
+			Vec3 pos = pi < 0 ? Vec3(&geo.pos[(size_t)~pi * 3]) : Vec3(&apos[(size_t)pi * 3]);
+			Vec3 sourcePosition = pos;
+			if (hasBillboard)
+				pos = XformPoint(pos, billboard);
+			Vec3 nrm = ni < 0 ? Vec3(&geo.norm[(size_t)~ni * 3]) : Vec3(&anorm[(size_t)ni * 3]);
+			float u = 0, v = 0;
+			if (ti < 0)
+			{
+				u = geo.uv[(size_t)~ti * 2];
+				v = geo.uv[(size_t)~ti * 2 + 1];
+			}
+			else if ((size_t)ti * 2 + 1 < atex.size())
+			{
+				u = atex[(size_t)ti * 2];
+				v = atex[(size_t)ti * 2 + 1];
+			}
+			if (uvMatrix)
+			{
+				const float transformedU = u * textureMatrix.m[0][0] + v * textureMatrix.m[1][0] + textureMatrix.m[3][0];
+				v = u * textureMatrix.m[0][1] + v * textureMatrix.m[1][1] + textureMatrix.m[3][1];
+				u = transformedU;
+			}
+			Vec3 specOut;
+			Vec3 lit = hw
+				? HardwareLightVertex(sourcePosition, nrm, ambient, lights, P, hardwareModel, hardwareInverse, W,
+					sink->hardware_local_viewer != 0, spec, G().nativeHardwareShininess, level,
+					Blend(m.specular, p.fp), specOut)
+				: LightVertex(pos, nrm, ambient, lights, false, viewerModel,
+					1.0f, 0.0f, Vec3(), specOut);
+			if (vertices.empty())
+				firstNativeLight = lit;
+			Vec3 contribution = hw && !swSpecTex ? specOut : Vec3();
+			/* SPEC-012 8: an additive surface with alpha < 1 is colour x alpha, however it is lit. Skipped under hardware lights
+			 * (the default ghl_light_method 3), the alarm beams' 0.15 opacity did nothing: hard white wedges in jpn2, kos3, tsr2. */
+			Vec3 colour(ClampF((lit.x + selfIllum) * base.x * cmul.x + contribution.x, 0, 1),
+				ClampF((lit.y + selfIllum) * base.y * cmul.y + contribution.y, 0, 1),
+				ClampF((lit.z + selfIllum) * base.z * cmul.z + contribution.z, 0, 1));
+			if (vertices.empty())
+				TraceMaterial("native", f, m, P, pos, nrm, colour, tex, lights);
+			om_ghoul_native_vertex_t out = {};
+			pos.Store(out.position);
+			nrm.Store(out.normal);
+			out.uv[0] = u;
+			out.uv[1] = v;
+			out.colour[0] = colour.x;
+			out.colour[1] = colour.y;
+			out.colour[2] = colour.z;
+			out.colour[3] = alpha;
+			vertices.push_back(out);
+			if (spec && (!hw || swSpecTex))
+			{
+				if (!hw)
+					(void)LightVertex(pos, nrm, ambient, lights, true, viewerModel,
+						expo, level, swSpecColor, specOut);
+				om_ghoul_native_vertex_t specVertex = out;
+				specVertex.colour[0] = ClampF(specOut.x, 0, 1);
+				specVertex.colour[1] = ClampF(specOut.y, 0, 1);
+				specVertex.colour[2] = ClampF(specOut.z, 0, 1);
+				specVertex.colour[3] = hw ? alpha : 1.0f;
+				specVertices.push_back(specVertex);
+			}
+		}
+
+		om_ghoul_native_draw_t draw = {};
+		draw.vertices = vertices.data();
+		draw.vertex_count = vertices.size();
+		draw.texture = textured ? &nativeTexture : nullptr;
+		draw.material_name = m.name.c_str();
+		draw.texture_name = s0.texture.c_str();
+		draw.texture_declared = s0.hasTexture ? 1 : 0;
+		draw.texture_list_resolved = list ? 1 : 0;
+		draw.texture_decoded = tex && tex->decoded ? 1 : 0;
+		std::memcpy(draw.model_to_world, &W.m[0][0], sizeof(draw.model_to_world));
+		draw.blend = m.blend == 1 ? OM_GHOUL_NATIVE_BLEND_ADDITIVE
+			: (blended ? OM_GHOUL_NATIVE_BLEND_ALPHA : OM_GHOUL_NATIVE_BLEND_OPAQUE);
+		draw.cull = m.twoSided ? OM_GHOUL_NATIVE_CULL_NONE
+			: (mirrored ? OM_GHOUL_NATIVE_CULL_FRONT : OM_GHOUL_NATIVE_CULL_BACK);
+		draw.depth_write = blended ? 0 : 1;
+		draw.alpha_test = blended ? 1 : 0;
+		draw.depth_bias = blended ? G().polyUnits : 0.0f;
+		draw.depth_slope = blended ? G().polyFactor : 0.0f;
+		draw.native_light_count = (int)lights.size();
+		ambient.Store(draw.native_ambient);
+		draw.native_hardware_lights = P->hardwareLights ? 1 : 0;
+		draw.native_gl_attenuation = P->glAttenuation ? 1 : 0;
+		firstNativeLight.Store(draw.native_first_light);
+		draw.bloom_source = std::max(selfIllum, m.blend == 1 ? 1.0f : 0.0f);
+		draw.specular_pass = 0;
+		if (hw && swSpecTex && !specVertices.empty())
+		{
+			/* Hardware specular maps are the first, depth-writing pass;
+			 * ambient/diffuse then add over it. Without a map the hardware
+			 * specular term was combined into the base colour above. */
+			om_ghoul_native_texture_t texture = {};
+			texture.key = swSpecTex->name.c_str();
+			texture.width = swSpecTex->width; texture.height = swSpecTex->height;
+			texture.has_alpha = swSpecTex->hasAlpha; texture.nomip = swSpecTex->nomip;
+			texture.repeat_u = m.slots[1].tileU; texture.repeat_v = m.slots[1].tileV;
+			texture.rgba = swSpecTex->rgba.data();
+			om_ghoul_native_draw_t first = draw;
+			first.vertices = specVertices.data(); first.texture = &texture;
+			first.texture_name = m.slots[1].texture.c_str();
+			first.texture_declared = first.texture_list_resolved = first.texture_decoded = 1;
+			first.depth_bias = -G().polyUnits; first.depth_slope = -G().polyFactor;
+			first.bloom_source = 0; first.specular_pass = 1;
+			sink->draw(sink->ctx, &first);
+			draw.blend = OM_GHOUL_NATIVE_BLEND_ADDITIVE;
+			draw.depth_write = 0; draw.depth_bias = draw.depth_slope = 0;
+			sink->draw(sink->ctx, &draw);
+			G().nativeHardwareShininess = 0;
+		}
+		else
+			sink->draw(sink->ctx, &draw);
+		if (!hw && spec && !specVertices.empty())
+		{
+			om_ghoul_native_texture_t nativeSpecTexture = {};
+			if (swSpecTex)
+			{
+				nativeSpecTexture.key = swSpecTex->name.c_str();
+				nativeSpecTexture.width = swSpecTex->width;
+				nativeSpecTexture.height = swSpecTex->height;
+				nativeSpecTexture.has_alpha = swSpecTex->hasAlpha ? 1 : 0;
+				nativeSpecTexture.nomip = swSpecTex->nomip ? 1 : 0;
+				nativeSpecTexture.repeat_u = m.slots[1].tileU ? 1 : 0;
+				nativeSpecTexture.repeat_v = m.slots[1].tileV ? 1 : 0;
+				nativeSpecTexture.rgba = swSpecTex->rgba.data();
+			}
+			draw.vertices = specVertices.data();
+			draw.vertex_count = specVertices.size();
+			draw.texture = swSpecTex ? &nativeSpecTexture : nullptr;
+			draw.blend = OM_GHOUL_NATIVE_BLEND_ADDITIVE;
+			draw.depth_write = 0;
+			draw.alpha_test = blended ? 1 : 0;
+			draw.depth_bias = G().polyUnits;
+			draw.depth_slope = G().polyFactor;
+			draw.bloom_source = 0; draw.specular_pass = 1;
+			sink->draw(sink->ctx, &draw);
+		}
+		G().stats.meshes++;
+		G().stats.triangles += (int)(sf.tris.size() / 3);
+		G().stats.trianglesTotal += (int)(sf.tris.size() / 3);
+	}
+}
+
 static void DrawOwn(Inst *in, DrawCtx &c, const Pose &p, const Matrix4 &W)
 {
+	/* the shadow walk only stamps the mask, on either path */
+	if (c.nativeSink && !c.wantMask && !c.shadowOnly)
+	{
+		DrawOwnNative(in, c, p, W);
+		return;
+	}
 	const GhoulGLTable *g = c.g;
 	GhoulRenderParams *P = c.P;
 	GhbFile &f = *p.file;
@@ -688,18 +1217,7 @@ static void DrawOwn(Inst *in, DrawCtx &c, const Pose &p, const Matrix4 &W)
 		bool uvMatrix = !s0.staticUV && !P->noTextureStack && textured;
 		if (uvMatrix)
 		{
-			Matrix4 um;
-			if (s0.uv.constant || s0.uv.v.size() <= 1)
-				um = s0.uv.v[0];
-			else if (p.adjacent)
-			{
-				const Matrix4 &a = s0.uv.At(p.fp.a), &b = s0.uv.At(p.fp.b);
-				for (int r = 0; r < 4; r++)
-					for (int k = 0; k < 4; k++)
-						um.m[r][k] = b.m[r][k] + (a.m[r][k] - b.m[r][k]) * p.fp.w;
-			}
-			else
-				um = s0.uv.At(p.fp.a);
+			Matrix4 um = MaterialTextureMatrix(s0, p);
 			g->MatrixMode(gl::TEXTURE);
 			g->PushMatrix();
 			g->LoadMatrixf(&um.m[0][0]);
@@ -823,6 +1341,8 @@ static void DrawOwn(Inst *in, DrawCtx &c, const Pose &p, const Matrix4 &W)
 				lc += Vec3(selfIllum, selfIllum, selfIllum);
 				Vec3 col(ClampF(lc.x * base.x * cmul.x, 0, 1), ClampF(lc.y * base.y * cmul.y, 0, 1),
 					ClampF(lc.z * base.z * cmul.z, 0, 1));
+				if (ci == sf.tris.front())
+					TraceMaterial("gl", f, m, P, pos, nrm, col, tex, lights);
 				g->Color4f(col.x, col.y, col.z, alpha);
 				if (spec)
 					specs.push_back(so);
@@ -1060,6 +1580,31 @@ struct ShadowQuad
 	float st[4][2];
 };
 
+/* the blob picture of shadow mode 1 */
+static const uint8_t *BlobPixels()
+{
+	static uint8_t blob[64 * 64];
+	static bool built = false;
+	if (!built)
+	{
+		built = true;
+		for (int y = -32; y < 32; y++)
+			for (int x = -32; x < 32; x++)
+			{
+				// SPEC-012 blob is a 1/2048 cubic (mean alpha ~0.4 over the quad, its dark core hidden under
+				// the body: owner fb3 "barely visible"). OpenMerc (DEVIATIONS): a full core to radius 9 that
+				// eases (smoothstep) to 0 at radius 31, so the quad's edge draws no outline and the visible
+				// ring around the feet / corpse carries the shadow
+				float r = std::sqrt((float)(x * x + y * y));
+				float e = (31.0f - r) / 22.0f;
+				e = e < 0.0f ? 0.0f : (e > 1.0f ? 1.0f : e);
+				int al = (int)(255.0f * e * e * (3.0f - 2.0f * e));
+				blob[(y + 32) * 64 + x + 32] = (uint8_t)(al < 0 ? 0 : (al > 255 ? 255 : al));
+			}
+	}
+	return blob;
+}
+
 static void DrawShadowQuad(DrawCtx &c, uint32_t tex, float alpha, const ShadowQuad &q, const Vec3 &shift, bool blob)
 {
 	const GhoulGLTable *g = c.g;
@@ -1189,16 +1734,19 @@ static void Shadow(Inst *in, DrawCtx &c)
 	if (c.mx1 < 0)
 		return; // no vertex: nothing is drawn
 
-	g->Enable(gl::TEXTURE_2D);
-	g->Enable(gl::BLEND);
-	g->BlendFunc(gl::ZERO, gl::ONE_MINUS_SRC_ALPHA);
-	g->DepthMask(0);
-	g->Enable(gl::POLYGON_OFFSET_FILL);
-	g->PolygonOffset(-3.0f, -3.0f);
-	g->Enable(gl::ALPHA_TEST);
-	g->AlphaFunc(gl::GREATER, 0.0f);
-	g->Disable(gl::CULL_FACE);
-	g->TexEnvf(gl::TEXTURE_ENV, gl::TEXTURE_ENV_MODE, (float)gl::MODULATE);
+	if (g)
+	{
+		g->Enable(gl::TEXTURE_2D);
+		g->Enable(gl::BLEND);
+		g->BlendFunc(gl::ZERO, gl::ONE_MINUS_SRC_ALPHA);
+		g->DepthMask(0);
+		g->Enable(gl::POLYGON_OFFSET_FILL);
+		g->PolygonOffset(-3.0f, -3.0f);
+		g->Enable(gl::ALPHA_TEST);
+		g->AlphaFunc(gl::GREATER, 0.0f);
+		g->Disable(gl::CULL_FACE);
+		g->TexEnvf(gl::TEXTURE_ENV, gl::TEXTURE_ENV_MODE, (float)gl::MODULATE);
+	}
 
 	// item 3: the blur stays inside the touched rectangle; the drawn rectangle then grows by one texel
 	if (P->shadowMode == 2)
@@ -1251,6 +1799,30 @@ static void Shadow(Inst *in, DrawCtx &c)
 		q.st[i][0] = tu[i][0] / 64.0f + 0.5f;
 		q.st[i][1] = tu[i][1] / 64.0f + 0.5f;
 	}
+	if (!g)
+	{
+		/* native renderer: the same quads as the GL passes below (mode 2: three passes shifted by one unit) */
+		const om_ghoul_native_sink_t *sink = c.nativeSink;
+		static const float blobST[4][2] = {{0, 0}, {0, 1}, {1, 1}, {1, 0}};
+		const bool blob = P->shadowMode == 1;
+		om_ghoul_native_shadow_t s;
+		s.mask = blob ? BlobPixels() : c.mask;
+		s.alpha = blob ? dark : dark * 0.3333f;
+		const float shifts[3] = {0.0f, -1.0f, 1.0f};
+		for (int pass = 0; pass < (blob ? 1 : 3); pass++)
+		{
+			for (int i = 0; i < 4; i++)
+			{
+				s.pos[i][0] = q.pos[i].x + shifts[pass];
+				s.pos[i][1] = q.pos[i].y + shifts[pass];
+				s.pos[i][2] = q.pos[i].z;
+				s.st[i][0] = blob ? blobST[i][0] : q.st[i][0];
+				s.st[i][1] = blob ? blobST[i][1] : q.st[i][1];
+			}
+			sink->shadow(sink->ctx, &s);
+		}
+		return;
+	}
 	if (P->shadowMode == 2)
 	{
 		uint32_t &t = g_shadowTex[g_shadowRing];
@@ -1274,23 +1846,9 @@ static void Shadow(Inst *in, DrawCtx &c)
 	{
 		if (!g_blobTex)
 		{
-			uint8_t blob[64 * 64];
-			for (int y = -32; y < 32; y++)
-				for (int x = -32; x < 32; x++)
-				{
-					// SPEC-012 blob is a 1/2048 cubic (mean alpha ~0.4 over the quad, its dark core hidden under
-					// the body: owner fb3 "barely visible"). OpenMerc (DEVIATIONS): a full core to radius 9 that
-					// eases (smoothstep) to 0 at radius 31, so the quad's edge draws no outline and the visible
-					// ring around the feet / corpse carries the shadow
-					float r = std::sqrt((float)(x * x + y * y));
-					float e = (31.0f - r) / 22.0f;
-					e = e < 0.0f ? 0.0f : (e > 1.0f ? 1.0f : e);
-					int al = (int)(255.0f * e * e * (3.0f - 2.0f * e));
-					blob[(y + 32) * 64 + x + 32] = (uint8_t)(al < 0 ? 0 : (al > 255 ? 255 : al));
-				}
 			g->GenTextures(1, &g_blobTex);
 			g->BindTexture(gl::TEXTURE_2D, g_blobTex);
-			g->TexImage2D(gl::TEXTURE_2D, 0, gl::ALPHA, 64, 64, 0, gl::ALPHA, gl::UNSIGNED_BYTE, blob);
+			g->TexImage2D(gl::TEXTURE_2D, 0, gl::ALPHA, 64, 64, 0, gl::ALPHA, gl::UNSIGNED_BYTE, BlobPixels());
 			g->TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MIN_FILTER, gl::LINEAR);
 			g->TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_MAG_FILTER, gl::LINEAR);
 			g->TexParameteri(gl::TEXTURE_2D, gl::TEXTURE_WRAP_S, gl::CLAMP);
@@ -1337,7 +1895,8 @@ void ForgetShadowTextures()
 void Inst::Draw(GhoulRenderParams *P)
 {
 	const GhoulGLTable *g = G().gl;
-	if (!P || !g)
+	const om_ghoul_native_sink_t *nativeSink = G().hasNativeSink ? &G().nativeSink : nullptr;
+	if (!P || (!g && !nativeSink))
 		return;
 	if (!on || !seq)
 	{
@@ -1348,6 +1907,7 @@ void Inst::Draw(GhoulRenderParams *P)
 	DrawCtx c;
 	c.P = P;
 	c.g = g;
+	c.nativeSink = nativeSink;
 	c.sys = sys;
 	c.time = P->time;
 	bool casts = P->shadowMode != 0 && (obj->character || P->entityFlag1000);
@@ -1356,13 +1916,18 @@ void Inst::Draw(GhoulRenderParams *P)
 	MatIdentity(root);
 	// I1c: smooth shading for the draw, flat again afterwards (black-box GL trace of the original Ghoul
 	// system: ShadeModel(SMOOTH) first, ShadeModel(FLAT) last in every instance draw)
-	g->ShadeModel(gl::SMOOTH);
+	if (g)
+		g->ShadeModel(gl::SMOOTH);
 	if (!P->noDynamicLights && !c.shadowOnly)
 		GatherLights(this, c, root); // I1c: SPEC-AMEND-006 I1c.3
 	if (!c.shadowOnly)
 		DrawLevel(this, c, root);
-	if (casts)
+	if (casts && (g || (nativeSink && nativeSink->shadow)))
 		Shadow(this, c);
+	/* Native shadows/specular/translucent phases are intentionally not replayed
+	 * through a GL table.  They are emitted by later direct sink stages. */
+	if (!g)
+		return;
 	// leave the state the renderer expects: no blending, depth writes, back-face culling, white
 	g->Disable(gl::BLEND);
 	g->Disable(gl::ALPHA_TEST);

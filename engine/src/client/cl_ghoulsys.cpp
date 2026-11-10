@@ -10,6 +10,7 @@
 // Implements: SPEC-010 (A), SPEC-011 (methods 1, 3, 41, 50; render parameters), SPEC-013 (sections 1-5,
 //             client), SPEC-803 (section 1, Rendering)
 
+#include <cmath>
 #include <cstring>
 
 #include "../ghoul/ghoul_api.h"
@@ -82,6 +83,43 @@ void CLG_Reset(void) { Sys()->Reset(); }                         // method 8
 void *CLG_FindInstance(int handle)
 {
 	return handle ? Sys()->FindInstance(handle) : nullptr;
+}
+
+// SPEC-400 effect bit 0x0001: turn an instance about its own x, y, z axes (radians), on top of its current transform
+void CLG_RotateInstance(int handle, float x, float y, float z)
+{
+	void *found = CLG_FindInstance(handle);
+	if (!found)
+		return;
+	IGhoulInst *inst = static_cast<IGhoulInst *>(found);
+	float cx = cosf(x), sx = sinf(x), cy = cosf(y), sy = sinf(y), cz = cosf(z), sz = sinf(z);
+	// row-vector rotation, applied in the model's own space: new = R x old
+	const float r[3][3] = {
+		{cy * cz, cy * sz, -sy},
+		{sx * sy * cz - cx * sz, sx * sy * sz + cx * cz, sx * cy},
+		{cx * sy * cz + sx * sz, cx * sy * sz - sx * cz, cx * cy},
+	};
+	Matrix4 old, out;
+	inst->GetTransform(&old);
+	memset(&out, 0, sizeof(out));
+	for (int i = 0; i < 3; i++)
+		for (int j = 0; j < 4; j++)
+			out.m[i][j] = r[i][0] * old.m[0][j] + r[i][1] * old.m[1][j] + r[i][2] * old.m[2][j];
+	for (int j = 0; j < 4; j++)
+		out.m[3][j] = old.m[3][j];
+	out.flags = 0;
+	inst->SetTransform(&out);
+}
+
+int CLG_LocalHandle(void *instance)
+{
+	return instance ? -(int)static_cast<IGhoulInst *>(instance)->GetInstanceId() : 0;
+}
+
+void CLG_SetUserValue(void *instance, void *value)
+{
+	if (instance)
+		static_cast<IGhoulInst *>(instance)->SetUserValue(value);
 }
 
 void CLG_GetTransform(void *instance, float m16[16])

@@ -52,6 +52,15 @@ void CL_Player_CommandFireTimes(float *primary, float *alternate);
 
 /* true while the client predicts its weapon (SPEC-602 section 1) */
 int CL_Player_Predicting(void);
+/* every client frame after the frame's commands ran, before the user command is built: the predicted weapon
+   think (SPEC-602 Behaviour 1) */
+void CL_Player_Predict(void);
+/* cl_input.c: the weapon buttons (SoF bits) and lean of the user command being built */
+int CL_PredictionButtons(int *lean);
+/* CL_ClearState, before the client Ghoul system is reset */
+void CL_Player_GhoulReset(void);
+/* handle (entity_t.frame) of the predicted view instance, 0 while not predicting */
+int CL_Player_PredictedViewHandle(void);
 
 /* the view-weapon Ghoul instance the client draws: the predicted one while predicting, else NULL (the
    caller uses the instance of player-state field 1) */

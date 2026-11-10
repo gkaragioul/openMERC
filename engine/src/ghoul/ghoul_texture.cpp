@@ -172,7 +172,10 @@ Texture *ListTexture(ImageList *l, int index, bool load)
 	}
 	Texture *t = slot;
 	t->usedSincePurge = true;
-	if (load && G().gl && !t->decoded)
+	/* Decoding produces the CPU RGBA data used by both renderers. GL is only
+	 * needed later by BindTexture/Upload; requiring it here left the native
+	 * Metal sink with a resolved image list but no pixels to submit. */
+	if (load && !t->decoded)
 	{
 		if (!t->missing && DecodeFile(t))
 			t->decoded = true;

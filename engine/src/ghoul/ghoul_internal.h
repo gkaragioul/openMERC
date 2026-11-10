@@ -80,6 +80,9 @@ struct Shared
 	std::map<std::string, std::unique_ptr<ImageList>> imageLists;
 	std::map<std::string, std::unique_ptr<Texture>> textures;
 	const GhoulGLTable *gl = nullptr;
+	om_ghoul_native_sink_t nativeSink{};
+	bool hasNativeSink = false;
+	float nativeHardwareShininess = 0.0f;
 	unsigned char gamma[256];
 	int textureDetail = 0;
 	// OpenMerc fb5: largest uploaded level (SoF: 256). Retail skins are at most 256, an HD pack

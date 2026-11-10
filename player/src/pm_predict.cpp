@@ -133,6 +133,17 @@ void Inventory::ClientCountersFromPS()
     unsigned char *ps = PS();
     if (!ps)
         return;
+    /* RLabs Mac port (deviation, docs/DEVIATIONS.md): while the predictor loads the shotgun shell by shell it keeps its
+       own counts. Both sides run the same reload_loop rule from the same counts; with no network delay (local game)
+       the server's "one more shell" arrived just before the client's own loop end, so the client saw a full clip and
+       ended the reload one loop early (2026-11-05 trace: client reload_2 at 76.91, server 77.10). Over a network the
+       counts arrive later and the original's overwrite gave the same answer. */
+    if (st.wstate == WS_RELOAD && st.animWeapon == W_SHOTGUN) {
+        PmTrace("CountersFromPS kept: shotgun reload, own clip %d reserve %d, server clip %d reserve %d",
+                st.curSlot >= 0 && st.curSlot < NUM_WSLOTS ? st.slots[st.curSlot].clip : -1, st.ammo[kWeapons[W_SHOTGUN].ammo1],
+                *(short *)(ps + PS_CLIP), *(short *)(ps + PS_RESERVE));
+        return;
+    }
     if (st.curSlot >= 0 && st.curSlot < NUM_WSLOTS)
         st.slots[st.curSlot].clip = *(short *)(ps + PS_CLIP);
     int w = st.animWeapon;
@@ -155,6 +166,8 @@ void Inventory::SwitchFollower()
     if (!si || si->GetUserValue())
         return;
     int w = *(unsigned short *)(ps + PS_VIEWTYPE);
+    PmTrace("SwitchFollower handle %d weapon %d switchNow %d synced %d target %d cur slot %d weapon %d anim %d", handle, w,
+            st.switchNow, st.synced, st.targetSlot, st.curSlot, st.curWeapon, st.animWeapon);
     if (st.switchNow) {
         st.switchNow = 0;
         int slot = st.targetSlot;

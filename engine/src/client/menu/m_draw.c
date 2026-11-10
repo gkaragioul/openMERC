@@ -1042,6 +1042,22 @@ MR_Re(void)
 				/* MENU-SCRATCH: TrueType menu text needs pictures with alpha */
 				mr_alphaimg = (OM_SetAlphaImage_t)Sys_GetProcAddress(reflib_handle, OM_SOFREF_ALPHAIMAGE_NAME);
 				MF_SetRenderer(mr_alphaimg);
+
+				/* A renderer may publish the SoF table only to receive the
+				 * Ghoul hand-off.  Menu parsing needs a complete 2D/font
+				 * subset, so do not select that table unless it can safely
+				 * replace the software menu path. */
+				if (mr_re && (!mr_re->Set2D || !mr_re->ResetClipRect ||
+					!mr_re->DrawGetPicSize || !mr_re->DrawPicPart ||
+					!mr_re->DrawFontString || !mr_re->FontStringWidth ||
+					!mr_re->FontLineHeight))
+				{
+					Com_DPrintf("Menu: renderer has no complete SoF 2D table; using software path\\n");
+					mr_re = NULL;
+					mr_setscale = NULL;
+					mr_alphaimg = NULL;
+					MF_SetRenderer(NULL);
+				}
 			}
 		}
 	}

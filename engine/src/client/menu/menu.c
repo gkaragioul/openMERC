@@ -18,6 +18,7 @@
 #include "header/m_draw.h"
 #include "../../common/header/sof/engine.h"
 #include "../../common/header/gamespy_chat.h" /* OpenMerc (I2d): MC_ClearLobby */
+#include <limits.h>
 
 menustate_t ms;
 
@@ -31,10 +32,24 @@ cvar_t *menu_gamepad;   /* MENU2: gamepad buttons navigate the menus */
 /* ------------------------------------------------------------------ */
 /* small helpers                                                        */
 
+/* OpenMerc capture aid: nonnegative milliseconds freeze menu presentation.
+ * It is deliberately nonarchived and does not freeze the engine, network or
+ * the test tour's wall-clock watchdog. Set it before opening fixture menus;
+ * changing clocks does not rebase existing screen/event timestamps. */
+static int
+M_ClockNow(void)
+{
+	static cvar_t *testtime;
+	if (!testtime) testtime = Cvar_Get("om_menutesttime", "-1", 0);
+	double value = testtime->value;
+	if (value >= 0 && value <= INT_MAX) return (int)value;
+	return Sys_Milliseconds();
+}
+
 int
 M_Time(void)
 {
-	return ms.drawing ? ms.now : Sys_Milliseconds();
+	return ms.drawing ? ms.now : M_ClockNow();
 }
 
 void
@@ -196,7 +211,8 @@ static float m_layoutscale;
 static qboolean
 M_ScreenWantsRail(const char *name)
 {
-	static const char *always[] = {"main", "player", NULL};
+	/* RLabs 2026-11-05: the main menu is a plain title screen without the rail (menus/main.rmf) */
+	static const char *always[] = {"player", NULL};
 	static const char *never[] = {"outfit", "mail", "testmotd", "objectives", NULL};
 	char *buf = NULL;
 	qboolean yes = false;
@@ -696,7 +712,7 @@ M_CreateSystem(void)
 
 	ms.active = true;
 	ms.forced = false;
-	ms.created = ms.lastpop = Sys_Milliseconds();
+	ms.created = ms.lastpop = M_Time();
 	ms.cursorv = 0;
 	ms.capture = NULL;
 	ms.tipwidget = NULL;
@@ -1027,7 +1043,7 @@ M_PopTop(void)
 	ms.capture = NULL;
 	ms.tipwidget = NULL;
 	ms.lasthover = NULL;
-	ms.lastpop = Sys_Milliseconds();
+	ms.lastpop = M_Time();
 	S_StopAllSounds();
 }
 
@@ -1228,9 +1244,9 @@ M_HackTeam_f(void)
 
 /* raw pointer movement in screen pixels (called by the input code) */
 void
-M_MouseMove(int dx, int dy)
+M_MouseMove(float dx, float dy)
 {
-	static int pdx, pdy;
+	static float pdx, pdy;
 
 	if (!ms.active)
 	{
@@ -1239,7 +1255,7 @@ M_MouseMove(int dx, int dy)
 
 	if (Cvar_VariableValue("m_filter"))
 	{
-		int fx = (dx + pdx) / 2, fy = (dy + pdy) / 2;
+		float fx = (dx + pdx) / 2, fy = (dy + pdy) / 2;
 
 		pdx = dx;
 		pdy = dy;
@@ -1250,6 +1266,22 @@ M_MouseMove(int dx, int dy)
 	/* MENU2: the pointer moves in menu units (window pixels / MR_Scale) */
 	ms.mx += dx / MR_Scale();
 	ms.my += dy / MR_Scale();
+}
+
+/* RLabs: the menu pointer where the system pointer is (window position in drawable pixels). A windowed game on
+   macOS keeps the system pointer, so the menu follows it exactly; summing movement drifted (fractions dropped,
+   the system pointer stopping at the window edge), and clicks landed away from where the player pointed
+   (2026-11-05: "can't select anything" in the menus). */
+void
+M_MouseAt(float px, float py)
+{
+	if (!ms.active)
+	{
+		return;
+	}
+
+	ms.mx = px / MR_Scale();
+	ms.my = py / MR_Scale();
 }
 
 static void
@@ -1929,11 +1961,8 @@ M_DrawTooltip(mscreen_t *scr)
 		return;
 	}
 
-	if (!ms.tipsound)
-	{
-		M_PlaySound("menu/small/hilite.wav");
-		ms.tipsound = true;
-	}
+	/* RLabs 2026-11-05 (play-tester: "remove the hover over annoying sound"): tooltips appear silently */
+	ms.tipsound = true;
 
 	if (t < (D >> 2) + (D >> 4) && (D >> 4) > 0)
 	{
@@ -2113,8 +2142,9 @@ M_Draw(void)
 			}
 		}
 
+		/* Sample before enabling M_Time's per-frame snapshot. */
+		ms.now = M_ClockNow();
 		ms.drawing = true;
-		ms.now = Sys_Milliseconds();
 		ms.framecount++;
 
 		if (menu_mouse_x->modified || menu_mouse_y->modified)

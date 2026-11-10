@@ -249,6 +249,7 @@ CL_ClearState(void)
 	/* wipe the entire cl structure */
 	memset(&cl, 0, sizeof(cl));
 	CL_ClearEntities();
+	CL_Player_GhoulReset(); /* RLabs: the predictor's view-weapon clone before the Ghoul reset frees it */
 	CL_Ghoul_ClearState(); /* I1c: client Ghoul system method 8 (SPEC-010) */
 
 	SZ_Clear(&cls.netchan.message);
@@ -652,6 +653,53 @@ CL_UpdateWindowedMouse(void)
 	}
 }
 
+/* RLabs (Thief lesson "keep a slow-frame profile in the release build"): gameplay frames that took more than
+   cl_slowframe_ms (default 25 ms, 3 refreshes at 120 Hz) are summed and logged at most once a second, so a reported
+   hiccup can be matched against the run log. 0 = off. */
+static void
+CL_SlowFrameLog(int renderdelta)
+{
+	static cvar_t *slow;
+	static int count, start;
+	static float worst;
+	int now = Sys_Milliseconds();
+	float ms = renderdelta / 1000.0f;
+
+	if (!slow)
+	{
+		slow = Cvar_Get("cl_slowframe_ms", "25", CVAR_ARCHIVE);
+	}
+
+	if ((slow->value <= 0) || (cls.state != ca_active) || cl_paused->value || (cls.key_dest != key_game))
+	{
+		count = 0;
+		return;
+	}
+
+	if (ms > slow->value)
+	{
+		if (!count)
+		{
+			start = now;
+			worst = 0;
+		}
+
+		count++;
+
+		if (ms > worst)
+		{
+			worst = ms;
+		}
+	}
+
+	if (count && (now - start >= 1000))
+	{
+		Com_Printf("[SLOW] %d frame%s over %g ms, worst %.1f ms (game time %.1f)\n", count, count > 1 ? "s" : "",
+				slow->value, worst, CL_Ghoul_GameClock());
+		count = 0;
+	}
+}
+
 void
 CL_Frame(int packetdelta, int renderdelta, int timedelta, qboolean packetframe, qboolean renderframe)
 {
@@ -718,6 +766,9 @@ CL_Frame(int packetdelta, int renderdelta, int timedelta, qboolean packetframe, 
 		IN_Update();
 		Cbuf_Execute();
 		CL_FixCvarCheats();
+		CL_Graphics_Frame(); /* RLabs: Performance / Quality / Battery */
+		CL_MenuScene_Frame(); /* RLabs: music behind the main menu */
+		CL_Player_Predict(); /* RLabs: weapon prediction after this frame's +attack etc. (SPEC-602) */
 
 		if (cls.state > ca_connecting)
 		{
@@ -763,6 +814,7 @@ CL_Frame(int packetdelta, int renderdelta, int timedelta, qboolean packetframe, 
 		}
 
 		CL_Ghoul_RunFrame(renderdelta / 1000000.0f); /* I1c: game clock, unclamped frame time (AMEND-006 I1c.1) */
+		CL_SlowFrameLog(renderdelta);
 		SCR_UpdateScreen();
 		CL_OmRec_Frame(); /* om_autorecord (cl_omrec.c) */
 
@@ -838,6 +890,8 @@ CL_Init(void)
 	IN_Init();
 
 	V_Init();
+	CL_MenuScene_Init();
+	CL_Graphics_Init();
 
 	net_message.data = net_message_buffer;
 

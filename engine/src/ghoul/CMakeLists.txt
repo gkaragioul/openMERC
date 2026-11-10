@@ -27,6 +27,7 @@ set(OMGHOUL_SOURCES
 
 add_library(omghoul STATIC ${OMGHOUL_SOURCES})
 target_include_directories(omghoul PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(omghoul PRIVATE OM_GHOUL_HOST_EXPORTS)
 set_target_properties(omghoul PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF
 	POSITION_INDEPENDENT_CODE ON)
 if(MSVC)

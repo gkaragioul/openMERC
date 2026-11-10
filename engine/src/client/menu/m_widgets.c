@@ -12,11 +12,14 @@
 #include <math.h>
 
 #include "header/menu.h"
+#include "header/m_palette.h"
 #include "header/m_draw.h"
 #include "../input/header/input.h"
 #include "../vid/header/vid.h"
 
-#define PIC(n) va("pics/menus/%s", n)
+/* RLabs: a name starting with "/" is a picture outside pics/menus (the main menu's game logo,
+   "/console/logo_sof" = pics/console/logo_sof from the player's own game data) */
+#define PIC(n) ((n)[0] == '/' ? va("pics%s", (n)) : va("pics/menus/%s", (n)))
 
 static int
 MW_FH(const mwidget_t *w)
@@ -331,15 +334,14 @@ Text_Draw(mpage_t *pg, mwidget_t *w, int x, int y)
 		int fh = MW_FH(w);
 		int tw = MR_StringWidth(w->text, w->font);
 
-		MR_Fill(x, y, w->w, w->h, lit ? w->btint : 0x60000000);
+		int sx, sw;
 
-		if (lit)
-		{
-			MR_Fill(x, y, 3, w->h, 0xFF2080FF);
-		}
-
-		MR_DrawString(x + (w->w - tw) / 2, y + (w->h - fh) / 2, w->text,
-				lit ? w->atint : w->tint, w->font, 0);
+		/* RLabs: a riveted plate of the original menu (m_wide.c MWD_HudButton), bone-white label, cyan when hovered */
+		MWD_HudButton(x, y, w->w, w->h, lit, &sx, &sw);
+		/* a dark shadow under the label keeps it readable on the textured metal */
+		MR_DrawString(sx + (sw - tw) / 2 + 1, y + (w->h - fh) / 2 + 1, w->text, SOFC(0, 0, 0, 0xD0), w->font, 0);
+		MR_DrawString(sx + (sw - tw) / 2, y + (w->h - fh) / 2, w->text,
+				lit ? SOF_LCD : SOF_BONE, w->font, 0);
 		return;
 	}
 
@@ -562,7 +564,7 @@ CText_Draw(mpage_t *pg, mwidget_t *w, int x, int y)
 			if (side)
 			{
 				MR_Fill(side < 0 ? x : x + w->w / 2, y, w->w / 2, w->h, w->btint);
-				MR_Fill(side < 0 ? x : x + w->w - 3, y, 3, w->h, 0xFF2080FF);
+				MR_Fill(side < 0 ? x : x + w->w - 3, y, 3, w->h, SOF_LCD);
 			}
 
 			MR_DrawString(x + aw / 2, y + (w->h - MW_FH(w)) / 2, "\xab", side < 0 ? w->atint : w->tint, w->font, 0);
@@ -1543,10 +1545,10 @@ Slider_Draw(mpage_t *pg, mwidget_t *w, int x, int y)
 		int kx = (int)floorf((v - d->min) * (d->bw - d->kw - 2) / range + d->cw + x) + 1;
 		qboolean hot = (w->flags & WF_HOVER) != 0;
 
-		MR_FlatBox(x, y + d->bh / 2 - 2, d->bw + 2 * d->cw, 4, 0xFF2A231C, 0xFF54473B, 0, false);
-		MR_FlatBox(x + 1, y + d->bh / 2 - 1, kx - x, 2, MW_Disabled(w) ? 0x80808080 : 0xFF2080FF, 0, 0, false);
+		MR_FlatBox(x, y + d->bh / 2 - 2, d->bw + 2 * d->cw, 4, SOFC(20, 24, 14, 255), SOF_OLIVE_EDGE, 0, false);
+		MR_FlatBox(x + 1, y + d->bh / 2 - 1, kx - x, 2, MW_Disabled(w) ? 0x80808080 : SOF_LCD, 0, 0, false);
 		MR_FlatBox(kx, y + (d->bh - d->kh) / 2, d->kw, d->kh,
-			MW_Disabled(w) ? 0x80A0A0A0 : (hot ? 0xFFFFFFFF : 0xFFD8DCD0), 0xFF100D0A, 0, false);
+			MW_Disabled(w) ? 0x80A0A0A0 : (hot ? SOF_LCD : SOF_BONE), SOF_DARK_EDGE, 0, false);
 		return;
 	}
 

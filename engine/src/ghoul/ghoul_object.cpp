@@ -510,8 +510,10 @@ void Object::Prepare(bool spec)
 	specular = spec;
 	if (sys->IsServer() && !baselineTaken)
 		TakeBaseline();
-	// textures: none without a GL table (dedicated server); geometry is already in memory for traces
-	if (!G().gl)
+	// Dedicated servers need no image decode.  A direct native renderer consumes
+	// the decoded RGBA bytes itself, so it has the same preparation requirement
+	// as the established GL-table renderer without inheriting GL state.
+	if (!G().gl && !G().hasNativeSink)
 		return;
 	for (GhbFile *f : files)
 	{

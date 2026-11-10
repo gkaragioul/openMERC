@@ -96,6 +96,7 @@ void CL_Demo_AfterMessage(void);
 
 /* ---- screen / HUD (cl_screen.c, cl_hud.c; SPEC-310) ---------------------- */
 void HUD_Init(void);
+void HUD_SelectLevelTerrain(void);    /* SPEC-002 map registration step 6 */
 void HUD_RegisterMedia(void);         /* at level registration */
 void HUD_DrawInterface(void);          /* section 2 */
 void HUD_DrawCrosshair(void);          /* section 3 */

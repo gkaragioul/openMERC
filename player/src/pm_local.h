@@ -411,6 +411,29 @@ public:
 static_assert(sizeof(WeaponDesc) - 4 >= 0xC4 + 4 - 4, "weapon description");
 #endif
 
+/* The game module reads these members by byte offset (game/src/player_api.h INV_* and WDESC_*). Keep both in step:
+   32-bit SoF layout, and the 64-bit layout of this build (8-byte vtable and data pointers). */
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof" /* classes with vtables: offsetof is well defined on these ABIs */
+#endif
+#if UINTPTR_MAX == 0xFFFFFFFFu
+static_assert(offsetof(Inventory, st) + offsetof(InvState, curWeapon) == 0x2C, "game INV_CURWEAPON_OFS");
+static_assert(offsetof(Inventory, st) + offsetof(InvState, inst) == 0x14C, "game INV_VIEWINST_OFS");
+static_assert(offsetof(Inventory, st) + offsetof(InvState, spread) == 0x270, "game INV_SPREAD_OFS");
+static_assert(offsetof(WeaponDesc, spreadPerShot) == 0x1C && offsetof(WeaponDesc, spreadMax) == 0x24 &&
+                  offsetof(WeaponDesc, attack) == 0xB8, "game WDESC_*");
+#else
+static_assert(offsetof(Inventory, st) + offsetof(InvState, curWeapon) == 0x38, "game INV_CURWEAPON_OFS (64-bit)");
+static_assert(offsetof(Inventory, st) + offsetof(InvState, inst) == 0x158, "game INV_VIEWINST_OFS (64-bit)");
+static_assert(offsetof(Inventory, st) + offsetof(InvState, spread) == 0x288, "game INV_SPREAD_OFS (64-bit)");
+static_assert(offsetof(WeaponDesc, spreadPerShot) == 0x20 && offsetof(WeaponDesc, spreadMax) == 0x28 &&
+                  offsetof(WeaponDesc, attack) == 0xBC, "game WDESC_* (64-bit)");
+#endif
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 /* ------------------------------------------------------------------------------------------------
  * Globals (pm_main.cpp)
  * ------------------------------------------------------------------------------------------------ */

@@ -75,7 +75,71 @@ static struct
 	int viewhandle;              /* view-weapon instance the engine's note handlers serve */
 	int viewtype;
 	float time;                  /* client import 1: the client's game-time estimate */
+
+	/* RLabs weapon prediction (SPEC-602 client side) */
+	qboolean predicting;         /* this connection reported `predicting 1` */
+	void *predinst;              /* the predictor's view instance after its last think, and its handle, to find */
+	int predhandle;              /* out whether the Ghoul system destroyed it since (level change, object gone) */
+	int lastseq;                 /* player-state weapon-state sequence of the previous think (-1: none yet) */
+	float lastthink;             /* game clock of the previous think (< 0: none yet) */
+	float fire1, fire2;          /* fire times for the next user command (SPEC-202 6.1) */
+	float kick[3];               /* the predictor's kick angles (the view uses the server's) */
+	int pauseframe;              /* server frame seen while paused (0: none) */
 } clp;
+
+/* The owner context of SPEC-003 (slot 61, 52 bytes on x86) and the parts of the stand-in owner the predictor reads:
+   the entity's client pointer (SPEC-760, 0x74 on x86) leading to the player-state words of SPEC-202 (view weapon,
+   counters, weapon-state sequence, field of view). Same member lists as player/src/om_player_api.h OwnerContext,
+   EdictPrefix and pm_local.h PsPrefix, so the natural 64-bit layout is the module's as well. */
+typedef struct
+{
+	void *inventory;
+	void *owner;
+	int attack, altattack, extra1, extra2;
+	int leanpositive, leannegative;
+	int cinematicfreeze, remoteview;
+	float *kick;
+	float frameten;
+	int reloadoneshot;
+} clp_ownerctx_t;
+
+typedef struct
+{
+	unsigned char pmove[28];
+	float viewangles[3], viewoffset[3], kick_angles[3], weaponkick[3], remote_origin[3], remote_angles[3];
+	int remote_entity, remote_type;
+	void *viewinst;
+	unsigned short viewid, viewtype;
+	short clip, reserve;
+	unsigned char weaponseq, resync, inhibit, pad7b;
+	void *bodyinst;
+	int unknown80;
+	float blend[4];
+	float fov;
+	unsigned char spare[256];
+} clp_psprefix_t;
+
+typedef struct
+{
+	unsigned char s[116];
+	void *client;
+	unsigned char spare[1024];
+} clp_edictprefix_t;
+
+static clp_ownerctx_t clp_ctx;
+static clp_psprefix_t clp_ps;
+static clp_edictprefix_t clp_owner;
+
+/* the inventory's current in-view instance (the game reads the same word, game/src/player_api.h
+   INV_VIEWINST_OFS; player/src/pm_local.h asserts both layouts) */
+#if UINTPTR_MAX == 0xFFFFFFFFu
+#define CLP_INV_VIEWINST_OFS 0x14C
+#else
+#define CLP_INV_VIEWINST_OFS 0x158
+#endif
+#define CLP_INV_VIEWINST(inv) (*(void **)((char *)(inv) + CLP_INV_VIEWINST_OFS))
+
+static cvar_t *om_predict_local;
 
 /* ---- client import table (SPEC-003) ---------------------------------------------------------------- */
 
@@ -468,6 +532,53 @@ CLP_EngineViewNotes(void)
 	CLP_ViewNotesProcess(inst, CL_Ghoul_GameClock() + 0.001f);
 }
 
+/* ---- weapon prediction helpers (RLabs, SPEC-602 client side) ---------------------------------------- */
+
+/* The predictor draws a clone of the server's view-weapon instance (SPEC-602 Behaviour 4). The client Ghoul system
+   destroys it with its object (a level's reset, a model the server dropped) without telling the inventory: before the
+   inventory touches it again, a destroyed clone's pointer is cleared so nothing calls through freed memory. */
+static void
+CLP_ForgetDeadClone(void)
+{
+	if (!clp.inv)
+	{
+		return;
+	}
+
+	if (clp.predinst && (CLP_INV_VIEWINST(clp.inv) == clp.predinst) &&
+		(CLG_FindInstance(clp.predhandle) != clp.predinst))
+	{
+		if (om_cpltrace && om_cpltrace->value)
+		{
+			Com_Printf("clplayer: predicted view instance %d was destroyed\n", clp.predhandle);
+		}
+
+		CLP_INV_VIEWINST(clp.inv) = NULL;
+	}
+
+	clp.predinst = NULL;
+	clp.predhandle = 0;
+}
+
+/* a fresh prediction inventory or a full state: the server's current view instance is adopted again (its user value
+   names the inventory that cloned it) and the timing state starts over */
+static void
+CLP_PredictionRestart(void)
+{
+	const sofps_t *x = CL_SoF_CurrentPS();
+
+	if (x->gun_id)
+	{
+		CLG_SetUserValue(CLG_FindInstance(x->gun_id), NULL);
+	}
+
+	clp.predinst = NULL;
+	clp.predhandle = 0;
+	clp.lastseq = -1;
+	clp.lastthink = -1;
+	clp.fire1 = clp.fire2 = 0;
+}
+
 /* ---- session ------------------------------------------------------------------------------------------ */
 
 static void
@@ -495,11 +606,13 @@ CLP_NewInventory(void)
 
 	if (clp.inv)
 	{
+		CLP_ForgetDeadClone();
 		clp.api->DeleteInventory(clp.inv);
 		clp.inv = NULL;
 	}
 
 	clp.inv = clp.api->NewInventory();
+	CLP_PredictionRestart();
 
 	if (!clp.local && clp.api->ForgetViewWeapons)
 	{
@@ -557,9 +670,9 @@ CLP_StartSession(void)
 	clp.resync = 0;
 	clp.viewhandle = 0;
 
-	/* SPEC-003 "Client prediction": from cl_predict, and only when the server is not localhost; the client
-	   does not predict yet (SPEC-602 predictor not hosted), so it reports 0 (a predicting client must send
-	   fire times, the game waits for them) */
+	/* SPEC-003 "Client prediction": from cl_predict, and only when the server is not localhost. 0 until the
+	   client side is loaded (a predicting client must send fire times, the game waits for them). */
+	clp.predicting = false;
 	Cvar_ForceSet("predicting", "0");
 
 	if (!om_clplayer->value)
@@ -589,6 +702,23 @@ CLP_StartSession(void)
 	}
 
 	CLP_NewInventory();
+
+	/* RLabs Mac port (deviation, docs/DEVIATIONS.md): the original never predicts on localhost, so in single
+	   player the gun is the server's at 10 Hz - a sequence that ends between two server frames holds its last
+	   pose until the next one (the shotgun reload "hiccup", up to 0.1 s at every animation change). With
+	   om_predict_local 1 (default) the local game predicts like a remote one: the view weapon animates at the
+	   frame rate on the client and the server fires at the client's fire times (SPEC-602). Demos never predict. */
+	if (cl_predict->value && !CL_Demo_Playing() &&
+		(!clp.local || (om_predict_local && om_predict_local->value)))
+	{
+		clp.predicting = true;
+		Cvar_ForceSet("predicting", "1");
+	}
+
+	if (om_cpltrace && om_cpltrace->value)
+	{
+		Com_Printf("clplayer: session %s, predicting %d\n", cls.servername, clp.predicting);
+	}
 }
 
 /* ---- engine hooks ---------------------------------------------------------------------------------- */
@@ -598,6 +728,7 @@ CL_Player_Init(void)
 {
 	om_clplayer = Cvar_Get("om_clplayer", "1", 0);
 	om_cpltrace = Cvar_Get("om_cpltrace", "0", 0);
+	om_predict_local = Cvar_Get("om_predict_local", "1", 0);
 	ghl_specular = Cvar_Get("ghl_specular", "1", CVAR_ARCHIVE);
 	sv_player_clientdrop = CLP_ServerSideUnloaded;
 }
@@ -655,25 +786,161 @@ CL_Player_Frame(void)
 	{
 		CLP_EngineViewNotes();
 	}
+	else if (clp.viewhandle)
+	{
+		/* the predictor's own callbacks on its clone play the notes now */
+		CLP_ViewNotesAttach(NULL);
+		clp.viewhandle = 0;
+	}
 }
 
 int
 CL_Player_Predicting(void)
 {
-	return 0;
+	return clp.predicting && clp.api && clp.inv && (cls.state == ca_active) &&
+		(CL_SoF_CurrentPS()->resync == clp.resync);
+}
+
+/* SPEC-602 Behaviour 1, once per client frame after the frame's input commands ran and before the user command
+   is built: owner context, queued server events, weapon think; the "fired" exports become the command's fire
+   times */
+void
+CL_Player_Predict(void)
+{
+	const sofps_t *x;
+	int buttons = 0, lean = 0;
+	float now, ft;
+
+	if (!CL_Player_Predicting())
+	{
+		clp.lastthink = -1;
+		return;
+	}
+
+	/* paused (menu or console in single player, a loaded game before it resumes): the server runs no frames and the
+	   game clock stands still (after a load it is not even the level's yet), so the weapon waits too */
+	if (cl_paused->value || !CL_Ghoul_ClockSettled())
+	{
+		clp.pauseframe = cl.frame.serverframe;
+		return;
+	}
+
+	/* after a pause, the first server frame that follows brings the level's time (a loaded game is paused at game
+	   time 0.2 until it resumes) */
+	if (clp.pauseframe && (cl.frame.serverframe == clp.pauseframe))
+	{
+		return;
+	}
+
+	clp.pauseframe = 0;
+
+	x = CL_SoF_CurrentPS();
+	CLP_SetContext();
+	CLP_ForgetDeadClone();
+	now = clp.time;
+
+	/* the stand-in owner: the player-state words the predictor reads */
+	clp_owner.client = &clp_ps;
+	clp_ps.viewid = (unsigned short)x->gun_id;
+	clp_ps.viewtype = (unsigned short)x->gun_type;
+	clp_ps.clip = (short)x->gun_count_a;
+	clp_ps.reserve = (short)x->gun_count_b;
+	clp_ps.weaponseq = (unsigned char)x->weapon_seq;
+	clp_ps.resync = (unsigned char)x->resync;
+	clp_ps.inhibit = (unsigned char)x->inhibit;
+	clp_ps.remote_type = x->remote_type;
+	clp_ps.fov = (float)x->fov;
+
+	/* the reload one-shot: the server counted a reload attempt (SPEC-602 Behaviour 3) */
+	if ((clp.lastseq >= 0) && (x->weapon_seq != clp.lastseq))
+	{
+		clp_ctx.reloadoneshot = 1;
+	}
+
+	clp.lastseq = x->weapon_seq;
+
+	/* exactly the buttons the user command will carry (CL_BuildCmd does not look at key_dest either) */
+	buttons = CL_PredictionButtons(&lean) & ~x->inhibit;
+
+	ft = (clp.lastthink >= 0) ? (now - clp.lastthink) : 0.0f;
+	clp.lastthink = now;
+
+	clp_ctx.inventory = clp.inv;
+	clp_ctx.owner = &clp_owner;
+	clp_ctx.attack = (buttons & 0x01) != 0;
+	clp_ctx.altattack = (buttons & 0x04) != 0;
+	clp_ctx.extra1 = (buttons & 0x08) != 0;
+	clp_ctx.extra2 = (buttons & 0x10) != 0;
+	clp_ctx.leanpositive = lean > 0;
+	clp_ctx.leannegative = lean < 0;
+	clp_ctx.cinematicfreeze = x->cinfreeze != 0;
+	clp_ctx.remoteview = x->remote_type != 0;
+	clp_ctx.kick = clp.kick;
+	clp_ctx.frameten = Q_clamp(ft, 0.0f, 0.1f) * 10.0f;
+
+	CLP_InvSetOwner(clp.inv, &clp_ctx);
+	CLP_InvApplyEvents(clp.inv);
+	CLP_InvClearEvents(clp.inv);
+
+	/* normal movement only (a dead or frozen player's weapon does nothing) */
+	if (x->pm_type < 2)
+	{
+		CLP_InvThink(clp.inv);
+
+		if (clp.api->firedPrimary && *clp.api->firedPrimary)
+		{
+			clp.fire1 = now;
+		}
+
+		if (clp.api->firedAlternate && *clp.api->firedAlternate)
+		{
+			clp.fire2 = now;
+		}
+	}
+
+	clp.predinst = CLP_INV_VIEWINST(clp.inv);
+	clp.predhandle = CLG_LocalHandle(clp.predinst);
+
+	if (om_cpltrace && om_cpltrace->value && (clp.fire1 || clp.fire2))
+	{
+		Com_Printf("clplayer: %.3f predicted fire %.3f / %.3f\n", now, clp.fire1, clp.fire2);
+	}
 }
 
 void *
 CL_Player_PredictedViewInstance(void)
 {
-	return NULL;
+	if (!CL_Player_Predicting() || !clp.predinst || (CLP_INV_VIEWINST(clp.inv) != clp.predinst))
+	{
+		return NULL;
+	}
+
+	return clp.predinst;
+}
+
+/* the handle of the predicted view instance for entity_t.frame (0 while not predicting) */
+int
+CL_Player_PredictedViewHandle(void)
+{
+	return CL_Player_PredictedViewInstance() ? clp.predhandle : 0;
 }
 
 void
 CL_Player_CommandFireTimes(float *primary, float *alternate)
 {
-	*primary = 0;
-	*alternate = 0;
+	*primary = clp.fire1;
+	*alternate = clp.fire2;
+	clp.fire1 = clp.fire2 = 0;
+}
+
+/* CL_ClearState, before the client Ghoul system is reset: the predictor's clone goes the proper way */
+void
+CL_Player_GhoulReset(void)
+{
+	if (clp.api && clp.inv)
+	{
+		CLP_NewInventory();
+	}
 }
 
 /* ---- svc 28 / 29 / 30 ------------------------------------------------------------------------------ */
@@ -750,7 +1017,9 @@ CL_Player_ParseFullState(void)
 		sb.cursize = net_message.cursize;
 		sb.readcount = start;
 		CLP_SetContext();
+		CLP_ForgetDeadClone();
 		CLP_InvReadFullState(clp.inv, &sb);
+		CLP_PredictionRestart();
 	}
 
 	net_message.readcount = start + CLP_STATE_BYTES;

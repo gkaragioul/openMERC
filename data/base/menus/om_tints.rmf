@@ -1,13 +1,15 @@
 <comment OpenMerc MENU-SCRATCH: colour names of the own menu pages (owner
-     t95u: own values, used instead of the stock tints page). 0xAABBGGRR.>
-<tint normaltext 0xffd8dcd0>
-<tint hilitetext 0xffffffff>
-<tint vbargray 0xff8c8478>
+     t95u: own values, used instead of the stock tints page). 0xAABBGGRR.
+     RLabs 2026-11-05 (play-tester: "the entire menu buttons and colors" should feel like SoF): the original ARC menu's
+     palette - bone text, sand headings ("orange" and "header" keep their names), cyan highlights, olive bars.>
+<tint normaltext 0xffc0d6dc>
+<tint hilitetext 0xffe2ec48>
+<tint vbargray 0xff648080>
 <tint backtint 0xff000000>
-<tint tipback 0xff2a231c>
+<tint tipback 0xff14221c>
 <tint tip 0xfff0f0f0>
 <tint icontint 0xffffffff>
-<tint iconhilite 0xff60c0ff>
+<tint iconhilite 0xffe2ec48>
 <tint hgreen 0xff58c878>
 <tint hblue 0xffd07850>
 <tint lblue 0xffffa080>
@@ -16,12 +18,12 @@
 <tint black 0xff000000>
 <tint transblack 0x80000000>
 <tint smokey 0xc0000000>
-<tint transgray 0x70504438>
-<tint darkgray 0xff40382f>
-<tint gray 0xff8c8478>
+<tint transgray 0x902c5446>
+<tint darkgray 0xff1c2e28>
+<tint gray 0xff648080>
 <tint white 0xffffffff>
-<tint orange 0xff2080ff>
-<tint header 0xff2080ff>
+<tint orange 0xff84bccc>
+<tint header 0xff84bccc>
 <tint semiblack 0xa0000000>
 <tint red 0xff3a3ae0>
 <tint blue 0xffe0903a>

@@ -158,7 +158,7 @@ MM_Update(mmodel_t *m)
 
 	for (i = 0; i < 3; i++)
 	{
-		ang[i] = m->rotation[i] + m->rotate[i] * (float)Sys_Milliseconds();
+		ang[i] = m->rotation[i] + m->rotate[i] * (float)M_Time();
 	}
 
 	if (m->roll[0])

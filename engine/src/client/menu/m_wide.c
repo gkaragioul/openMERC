@@ -25,6 +25,7 @@
 
 #include "header/menu.h"
 #include "header/m_draw.h"
+#include "header/m_palette.h"
 
 /* layout metrics, menu units */
 #define MWD_GAP 8          /* nav panel to tab strip */
@@ -241,38 +242,45 @@ MWD_Frame(mscreen_t *scr, mframe_t *f, const char *cut, int W, int H, qboolean *
    window pixels (MR_FlatBox): no pictures, crisp at every scale. Colours
    0xAABBGGRR: slate panels, a thin steel border, the orange accent of the
    menu text. hover != 0 is the hovered state of tabs and buttons */
-#define MWD_ACCENT 0xFF2080FF
-#define MWD_EDGE 0xFF463A30
+#define MWD_ACCENT SOF_LCD_DIM
+
+/* a live picture behind the menu: the running level (menu_livebg) or the main menu's scene (RLabs) */
+static qboolean
+MWD_LiveBehind(void)
+{
+	return (cls.state == ca_active && Cvar_VariableValue("menu_livebg")) || CL_MenuScene_Active();
+}
+#define MWD_EDGE SOF_OLIVE_EDGE
 
 void
 MWD_Chrome(const char *name, int x, int y, int w, int h, int hover)
 {
 	/* over the live game (MWD_DrawBackground) the panels let it show through */
-	qboolean live = cls.state == ca_active && Cvar_VariableValue("menu_livebg");
+	qboolean live = MWD_LiveBehind();
 
 	if (!strcmp(name, "panel"))
 	{
-		MR_FlatBox(x, y, w, h, live ? 0x981E1912 : 0xEE1E1912, MWD_EDGE, MWD_ACCENT, false);
+		MR_FlatBox(x, y, w, h, live ? SOFC(16, 20, 12, 0x98) : SOFC(16, 20, 12, 0xEE), MWD_EDGE, MWD_ACCENT, false);
 	}
 	else if (!strcmp(name, "well"))
 	{
-		MR_FlatBox(x, y, w, h, 0xB0100D0A, 0xFF332A23, 0, false);
+		MR_FlatBox(x, y, w, h, SOFC(8, 10, 6, 0xB0), SOFC(40, 48, 28, 255), 0, false);
 	}
 	else if (!strcmp(name, "tab"))
 	{
-		MR_FlatBox(x, y, w, h, hover ? 0xF0383026 : 0xE6241E18, MWD_EDGE, 0, false);
+		MR_FlatBox(x, y, w, h, hover ? SOFC(52, 62, 36, 0xF0) : SOFC(28, 34, 20, 0xE6), MWD_EDGE, 0, false);
 	}
 	else if (!strcmp(name, "tab_on"))
 	{
-		MR_FlatBox(x, y, w, h, live ? 0x981E1912 : 0xEE1E1912, MWD_EDGE, MWD_ACCENT, true);
+		MR_FlatBox(x, y, w, h, live ? SOFC(16, 20, 12, 0x98) : SOFC(16, 20, 12, 0xEE), MWD_EDGE, MWD_ACCENT, true);
 	}
 	else if (!strcmp(name, "button"))
 	{
-		MR_FlatBox(x, y, w, h, hover ? 0xF0403628 : 0xF02A231C, hover ? MWD_ACCENT : 0xFF54473B, 0, false);
+		MR_FlatBox(x, y, w, h, hover ? SOFC(58, 70, 40, 0xF0) : SOFC(34, 42, 24, 0xF0), hover ? SOF_LCD : SOF_OLIVE_EDGE, 0, false);
 	}
 	else if (!strcmp(name, "groove"))
 	{
-		MR_FlatBox(x, y, w, h, 0xC00C0A08, 0xFF332A23, 0, false);
+		MR_FlatBox(x, y, w, h, SOFC(8, 10, 6, 0xC0), SOFC(40, 48, 28, 255), 0, false);
 	}
 }
 
@@ -288,7 +296,17 @@ MWD_DrawBackground(int x, int y, int w, int h)
 		return;
 	}
 
-	MR_FlatGradient(x, y, w, h, 0xFF2A221C, 0xFF0E0B09);
+	/* RLabs: the live level behind the main menu (cl_menuscene.c), lightly dimmed, through black between shots */
+	if (CL_MenuScene_Active())
+	{
+		float fade = CL_MenuScene_Fade();
+		int a = (int)(0x38 + (0xFF - 0x38) * fade);
+
+		MR_Fill(x, y, w, h, (unsigned)Q_min(255, Q_max(0, a)) << 24);
+		return;
+	}
+
+	MR_FlatGradient(x, y, w, h, SOFC(34, 42, 26, 255), SOFC(8, 10, 6, 255));
 }
 
 /* chrome under the folder screen's widgets: drawn by the topic page after
@@ -676,7 +694,7 @@ MWD_DrawSlot(mpage_t *pg, mwidget_t *w, int x, int y)
 
 		MWD_Chrome("button", x, y, w->w, w->h, hover);
 		MR_DrawString(x + (w->w - tw) / 2, y + (w->h - fh) / 2 + 1, label,
-			hover ? 0xFFFFFF60 : 0xFFD8E0DC, MWD_LABELFONT, 0);
+			hover ? SOF_LCD : SOF_BONE, MWD_LABELFONT, 0);
 		return true;
 	}
 
@@ -688,4 +706,53 @@ MWD_DrawSlot(mpage_t *pg, mwidget_t *w, int x, int y)
 	}
 
 	return false;
+}
+
+/* RLabs 2026-11-05: a main-menu button as a riveted plate of the original ARC main menu's olive metal
+   (ghoul/menus/metal1.tga from the player's game data, tiled), a bevel, four rivets; hovered: brighter metal
+   and a cyan bar at the left (the original menu's highlight colour). Returns the label area in *sx / *sw. */
+void
+MWD_HudButton(int x, int y, int w, int h, int lit, int *sx, int *sw)
+{
+	const unsigned tint = lit ? 0xFFFFFFFF : 0xFFB8B8B8;
+	int tx, tile = h;
+
+	MR_Fill(x - 1, y - 1, w + 2, h + 2, SOFC(0, 0, 0, 0xC0)); /* a soft dark outline */
+
+	for (tx = 0; tx < w; tx += tile)
+	{
+		int tw = tx + tile <= w ? tile : w - tx;
+
+		MR_StretchPic(x + tx, y, tw, h, tint, "ghoul/menus/metal1.tga", 0);
+	}
+
+	/* bevel */
+	MR_Fill(x, y, w, 1, SOFC(255, 255, 230, 0x60));
+	MR_Fill(x, y, 1, h, SOFC(255, 255, 230, 0x40));
+	MR_Fill(x, y + h - 1, w, 1, SOFC(0, 0, 0, 0xA0));
+	MR_Fill(x + w - 1, y, 1, h, SOFC(0, 0, 0, 0x80));
+
+	/* rivets */
+	{
+		const int r = 2, in = 4;
+		const int cx[2] = {x + in, x + w - in - r}, cy[2] = {y + in - 1, y + h - in - r + 1};
+		int i, j;
+
+		for (i = 0; i < 2; i++)
+		{
+			for (j = 0; j < 2; j++)
+			{
+				MR_Fill(cx[i], cy[j], r, r, SOFC(20, 22, 12, 0xE0));
+				MR_Fill(cx[i], cy[j], 1, 1, SOFC(230, 230, 200, 0xC0));
+			}
+		}
+	}
+
+	if (lit)
+	{
+		MR_Fill(x + 1, y + 1, 3, h - 2, SOF_LCD);
+	}
+
+	*sx = x + 8;
+	*sw = w - 16;
 }

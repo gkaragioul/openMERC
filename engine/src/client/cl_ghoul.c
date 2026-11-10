@@ -31,7 +31,10 @@
 #include "header/client.h"
 #include "header/sofclient.h"
 #include "header/cl_ghoul.h"
+#include "fx/cl_fx.h"
+#include "header/cl_player.h" /* RLabs: weapon prediction */
 #include "../common/header/sof/refapi.h"
+void *OMGhoul_FindInstance(void *system, int handle); /* ghoul_host.h (RLabs: entity dump) */
 
 extern void *reflib_handle; /* vid.c */
 
@@ -292,6 +295,14 @@ CL_Ghoul_GameClock(void)
 	return clg_clockset ? clg_clock : cl.time * 0.001f;
 }
 
+/* RLabs weapon prediction: the estimate follows the received game time (not, as after a load before play resumes,
+   a stale value the next svc_frame will jump away from) */
+int
+CL_Ghoul_ClockSettled(void)
+{
+	return clg_clockset && (fabsf(clg_clock - clg_frametime) <= 0.5f);
+}
+
 /* the frame-record values (SPEC-002 0x48, 0x4c, 0x50) as the last view rebuild set them */
 void
 CL_Ghoul_FrameRecordClock(float *old, float *delta, float *now)
@@ -329,6 +340,31 @@ CL_Ghoul_Dump(const char *what, const entity_t *e)
 			e->alpha);
 }
 
+/* SPEC-400 Entity effects bit 0x0001, ghoul-instance branch: fans, radar dishes, tyres, chandeliers, office chairs. Nothing
+   turned them: v4..v7 name up to four instances and each is turned every frame by w x frame time / 512 (w = v1, v2, v3).
+   SPEC-400 leaves the unit open; radians make the stock speeds right (a fan's 1.5 to 31, a radar dish's 1.5). The branch
+   for v4 = 0 (turning the whole entity) is not used by any stock prop. */
+static void
+CLG_RotatingEntity(const entity_state_t *s)
+{
+	const short *v;
+	float dt = cls.rframetime / 512.0f;
+	int i;
+
+	if (!(s->effects & 0x0001) || !(v = CLFX_StateSlots(s)) || !v[4])
+	{
+		return;
+	}
+
+	for (i = 4; i < 8; i++)
+	{
+		if (v[i])
+		{
+			CLG_RotateInstance(v[i], v[1] * dt, v[2] * dt, v[3] * dt);
+		}
+	}
+}
+
 /* SPEC-AMEND-006 I1c.2 steps 1, 2 and 5, for every packet entity (cl_sof.c): angles, frame, old frame,
    back-lerp and alpha as the original client fills its entity record */
 void
@@ -336,6 +372,8 @@ CL_Ghoul_EntityValues(entity_t *ent, const entity_state_t *s)
 {
 	const centity_t *cent = &cl_entities[s->number];
 	int i, f;
+
+	CLG_RotatingEntity(s);
 
 	if (s->effects & CLG_EF_ROTATE)
 	{
@@ -438,7 +476,9 @@ CL_Ghoul_AddEntity(entity_t *ent, const entity_state_t *s, int own)
 
 	if (clg_dumping)
 	{
-		CL_Ghoul_Dump(va("ent %d", s->number), ent);
+		/* RLabs: also whether this client has the instance the handle names (the renderer skips it silently) */
+		void *found = CL_Ghoul_System() ? OMGhoul_FindInstance(CL_Ghoul_System(), (short)(ent->frame & 0xffff)) : NULL;
+		CL_Ghoul_Dump(va("ent %d%s", s->number, found ? "" : " (NO INSTANCE)"), ent);
 	}
 
 	V_AddEntity(ent);
@@ -482,6 +522,7 @@ CL_Ghoul_AddViewWeapon(void)
 	const sofps_t *x = CL_SoF_CurrentPS();
 	entity_t gun;
 	void *inst;
+	int handle;
 
 	if (!CL_Ghoul_Active() || !cl_gun->value || x->remote_type || !x->gun_id ||
 		(cl.frame.playerstate.fov > 95))
@@ -489,7 +530,16 @@ CL_Ghoul_AddViewWeapon(void)
 		return;
 	}
 
-	inst = CLG_FindInstance(x->gun_id);
+	/* RLabs: while the client predicts its weapon it draws the predictor's clone (animated at the frame rate),
+	   else the server's instance (SPEC-602 open question 1) */
+	handle = CL_Player_PredictedViewHandle();
+	inst = handle ? CLG_FindInstance(handle) : NULL;
+
+	if (!inst)
+	{
+		handle = x->gun_id;
+		inst = CLG_FindInstance(handle);
+	}
 
 	if (!inst)
 	{
@@ -497,7 +547,7 @@ CL_Ghoul_AddViewWeapon(void)
 		return;
 	}
 
-	CL_Ghoul_ApplySway(inst, x->gun_id);
+	CL_Ghoul_ApplySway(inst, handle);
 
 	memset(&gun, 0, sizeof(gun));
 	VectorCopy(cl.refdef.vieworg, gun.origin);
@@ -505,7 +555,7 @@ CL_Ghoul_AddViewWeapon(void)
 	gun.angles[0] = -cl.refdef.viewangles[0];
 	gun.angles[1] = cl.refdef.viewangles[1];
 	gun.angles[2] = -cl.refdef.viewangles[2];
-	gun.frame = x->gun_id;
+	gun.frame = handle;
 	gun.flags = CLG_VIEWWEAPON_FLAGS;
 	gun.backlerp = 1.0f - cl.lerpfrac;
 

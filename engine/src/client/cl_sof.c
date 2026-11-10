@@ -47,6 +47,7 @@
 #include "header/sof_tables.h"
 #include "header/sof_sound.h"
 #include "header/sofclient.h" /* OpenMerc (I6h) */
+#include "../common/header/sof/refapi.h" /* slot 0xa8: damaged textures */
 #include "input/header/input.h"
 #include "fx/cl_fx.h" /* OpenMerc (I5): effects, temp entities */
 #include "header/cl_ghoul.h" /* I1c: the Ghoul client system */
@@ -320,7 +321,7 @@ CL_SoF_Init(void)
 	Cvar_Get("spectator_password", "", CVAR_USERINFO);
 	Cvar_Get("allow_download_models", "1", CVAR_USERINFO | CVAR_ARCHIVE);
 	Cvar_Get("cl_violence", "0", CVAR_USERINFO | CVAR_ARCHIVE);
-	/* no client-side weapon prediction yet (net-verification.md item 9) */
+	/* set per connection by cl_player.c (CLP_StartSession) once the weapon predictor is loaded */
 	Cvar_Get("predicting", "0", CVAR_USERINFO);
 	/* OpenMerc (I1b): the SPEC-302 table registers "1"; the engine client hosts no
 	   player-module predictor yet (SPEC-003 client side), and a client that reports
@@ -1962,8 +1963,20 @@ CL_SoF_ParseServerMessage(void)
 			}
 
 			case sofsvc_damagetexture:
-				SoF_Skip(3);
+			{
+				/* SPEC-201 s25, SPEC-002 slot 0xa8: short surface index, byte stage (the renderer ignores the stage) */
+				extern const sofrefexport_t *HUD_Ref(void);
+				const sofrefexport_t *re2 = HUD_Ref();
+				int surface = MSG_ReadShort(&net_message);
+				int stage = MSG_ReadByte(&net_message);
+
+				if (re2 && re2->DamageTexture)
+				{
+					re2->DamageTexture(surface, stage);
+				}
+
 				break;
+			}
 
 			case sofsvc_ghoulreliable:
 				SoF_ParseGhoul("reliable");
@@ -2096,8 +2109,7 @@ CL_SoF_FinalizeCmd(usercmd_t *cmd, int lean, qboolean run, qboolean altattack,
 	cmd->upmove = (short)Q_clamp(cmd->upmove, -200, 200);
 
 	x->lean = lean;
-	x->firetime = 0; /* no predicted weapon fire yet */
-	x->altfiretime = 0;
+	CL_Player_CommandFireTimes(&x->firetime, &x->altfiretime); /* SPEC-602 3: 0 when nothing was fired */
 }
 
 typedef struct

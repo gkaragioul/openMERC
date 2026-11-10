@@ -1,30 +1,22 @@
-<!-- OpenMerc MENU-SCRATCH: landing page of the main menu (owner t91u, t96):
-     title, version, the main actions (text option ombutton) and the newest
-     savegame (menu.c sets menu_cancontinue, menu_hassave, menu_nosave and
-     om_lastsave_*; "om_continue" returns to the level or loads that save) -->
+<!-- OpenMerc MENU-SCRATCH: landing page of the main menu (menu.c sets menu_cancontinue, menu_hassave,
+     menu_nosave and om_lastsave_*; "om_continue" returns to the level or loads that save).
+     RLabs 2026-11-05: the game's logo (pics/console/logo_sof from the player's own game data) and the single-player
+     actions only; the live level shows through (backdrop omflat -> MWD_DrawBackground) -->
 <stm>
 <strings menu_omset>
+<backdrop omflat>
 
 <center>
-<hbr>
-<font type logo tint orange>
-<text "openMERC"><br>
-<font type logosmall tint normaltext>
-<ctext om_version><br>
-<hr width 280 tint gray>
-<hbr>
+<blank 1 24><br>
+<image "/console/logo_sof" width 384 height 192><br>
+<blank 1 12><br>
 <font type interface tint normaltext atint hilitetext>
 <cinclude menu_cancontinue om_home_cont>
-<text "^MENU_OMSET_HOME_NEWGAME^" ombutton btint transgray width 280 height 28 key mouse1 "menu game"><br>
-<blank 3 3><br>
-<text "^MENU_OMSET_HOME_LOAD^" ombutton btint transgray width 280 height 28 key mouse1 "menu load"><br>
-<blank 3 3><br>
-<text "^MENU_OMSET_HOME_MULTI^" ombutton btint transgray width 280 height 28 key mouse1 "stopsound;menu player2"><br>
-<blank 3 3><br>
-<text "^MENU_OMSET_HOME_SETTINGS^" ombutton btint transgray width 280 height 28 key mouse1 "menu video"><br>
-<blank 3 3><br>
-<text "^MENU_OMSET_HOME_QUIT^" ombutton btint transgray width 280 height 28 key mouse1 "menu quit"><br>
-<hbr>
-<cinclude menu_hassave om_home_last>
-<cinclude menu_nosave om_home_nosave>
+<text "^MENU_OMSET_HOME_NEWGAME^" ombutton btint transgray width 280 height 30 key mouse1 "menu game"><br>
+<blank 7 7><br>
+<text "^MENU_OMSET_HOME_LOAD^" ombutton btint transgray width 280 height 30 key mouse1 "menu load"><br>
+<blank 7 7><br>
+<text "^MENU_OMSET_HOME_SETTINGS^" ombutton btint transgray width 280 height 30 key mouse1 "menu video"><br>
+<blank 7 7><br>
+<text "^MENU_OMSET_HOME_QUIT^" ombutton btint transgray width 280 height 30 key mouse1 "menu quit"><br>
 </stm>

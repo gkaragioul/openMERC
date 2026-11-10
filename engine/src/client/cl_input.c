@@ -39,6 +39,11 @@
 #include "header/client.h"
 #include "header/sofclient.h"
 #include "input/header/input.h"
+#include "header/cl_player.h" /* RLabs: weapon prediction */
+#include <math.h>
+
+qboolean R_IsVSyncActive(void); /* vid/vid.c */
+float GLimp_GetRefreshRate(void); /* vid/glimp_sdl3.c */
 
 /* SoF user command buttons (SPEC-202 6.1) */
 #define BUTTON_ALTATTACK 0x04
@@ -532,6 +537,45 @@ CL_Lean(void)
 	return lean;
 }
 
+/* RLabs weapon prediction (cl_player.c CL_Player_Predict): the weapon buttons and lean the next user command
+   will carry (rules D 2 and D 9 of CL_BuildCmd), read before it is built; SoF bits 0x01 attack, 0x04 alternate,
+   0x08 / 0x10 weapon extra 1 / 2 */
+int
+CL_PredictionButtons(int *lean)
+{
+	const sofps_t *ps = CL_SoF_CurrentPS();
+	int b = 0;
+
+	*lean = CL_Lean();
+
+	if (CL_CinematicFreezeActive() || ((ps->remote_type != 0) && (ps->remote_type != 1)))
+	{
+		return 0;
+	}
+
+	if (DOWN_OR_WENT(in_attack))
+	{
+		b |= BUTTON_ATTACK;
+	}
+
+	if (DOWN_OR_WENT(in_altattack))
+	{
+		b |= BUTTON_ALTATTACK;
+	}
+
+	if (DOWN_OR_WENT(in_wextra1))
+	{
+		b |= BUTTON_WEAPONEXTRA1;
+	}
+
+	if (DOWN_OR_WENT(in_wextra2))
+	{
+		b |= BUTTON_WEAPONEXTRA2;
+	}
+
+	return b;
+}
+
 /* D 11: running diagonally is no faster than running straight */
 static void
 CL_DiagonalCorrection(usercmd_t *cmd)
@@ -656,7 +700,57 @@ CL_BuildCmd(usercmd_t *cmd)
 	}
 
 	/* D 6 */
-	ms = (int)(cls.nframetime * 1000.0f);
+	{
+		/* RLabs Mac port (cl_vsyncsteps, default 1): the command time used to be the frame time with its fraction
+		   dropped, so at 120/144 Hz the per-frame movement jumped between 7, 8 and 9 ms against an even display
+		   (micro-stutter while walking, the gun shaking with the view). With vsync, a frame within a quarter of a
+		   whole number of refresh periods counts as exactly that; the fraction of a millisecond is carried to the
+		   next command instead of being lost, so game time still adds up to real time. */
+		static cvar_t *vsyncsteps;
+		static float ms_carry;
+		float exact = cls.nframetime * 1000.0f;
+
+		if (!vsyncsteps)
+		{
+			vsyncsteps = Cvar_Get("cl_vsyncsteps", "1", CVAR_ARCHIVE);
+		}
+
+		if (vsyncsteps->value && R_IsVSyncActive())
+		{
+			float rr = GLimp_GetRefreshRate();
+
+			/* RLabs: with variable refresh the frames are shown at the frame-rate cap, not on the screen's refresh */
+			if (Cvar_VariableValue("vid_vrr_active") != 0)
+			{
+				float cap = Cvar_VariableValue("vid_maxfps");
+
+				if (cap >= 30.0f && (rr < 30.0f || cap < rr))
+				{
+					rr = cap;
+				}
+			}
+
+			if (rr >= 30.0f)
+			{
+				float period = 1000.0f / rr;
+				float k = roundf(exact / period);
+
+				if (k >= 1.0f && k <= 4.0f && fabsf(exact - k * period) < 0.25f * period)
+				{
+					exact = k * period;
+				}
+			}
+		}
+
+		exact += ms_carry;
+		ms = (int)exact;
+		ms_carry = exact - (float)ms;
+
+		if (ms_carry < 0.0f || ms_carry >= 1.0f)
+		{
+			ms_carry = 0.0f;
+		}
+	}
 
 	if (ms > 250)
 	{
@@ -679,8 +773,8 @@ CL_BuildCmd(usercmd_t *cmd)
 	/* D 11 */
 	CL_DiagonalCorrection(cmd);
 
-	/* clamping, wire quantisation, lean and fire times (cl_sof.c);
-	   no client weapon prediction yet, so the fire times stay 0 */
+	/* clamping, wire quantisation, lean and fire times (cl_sof.c; the fire times come from the weapon
+	   predictor, cl_player.c) */
 	CL_SoF_FinalizeCmd(cmd, lean, false, false, false, false);
 }
 
@@ -688,6 +782,24 @@ void
 IN_CenterView(void)
 {
 	cl.viewangles[PITCH] = -SHORT2ANGLE(cl.frame.playerstate.pmove.delta_angles[PITCH]);
+}
+
+/* RLabs test aid: omview <pitch> [yaw] - the view's pitch (and yaw) in world degrees, for scripted captures */
+static void
+IN_OmView_f(void)
+{
+	if (Cmd_Argc() < 2)
+	{
+		Com_Printf("usage: omview <pitch> [yaw]\n");
+		return;
+	}
+
+	cl.viewangles[PITCH] = (float)atof(Cmd_Argv(1)) - SHORT2ANGLE(cl.frame.playerstate.pmove.delta_angles[PITCH]);
+
+	if (Cmd_Argc() > 2)
+	{
+		cl.viewangles[YAW] = (float)atof(Cmd_Argv(2)) - SHORT2ANGLE(cl.frame.playerstate.pmove.delta_angles[YAW]);
+	}
 }
 
 /* ---------------------------------------------------------------------
@@ -785,6 +897,7 @@ void
 CL_InitInput(void)
 {
 	Cmd_AddCommand("centerview", IN_CenterView);
+	Cmd_AddCommand("omview", IN_OmView_f);
 
 	Cmd_AddCommand("+moveup", IN_UpDown);
 	Cmd_AddCommand("-moveup", IN_UpUp);

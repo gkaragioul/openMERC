@@ -35,6 +35,96 @@ static float fx_dirtable[250][3];
 static void FX_ViewOverride(void);
 static void FX_SceneDump(void);
 
+/* Renderer parity fixture: opt-in, non-archived, and submitted through the
+ * real SPEC-002 frame API to every backend. It changes no game assets/state.
+ * 1: billboard; 2: add an oriented quad and beam. */
+static void
+FX_RenderChainFixture(int lod)
+{
+	static sofalphaquad_t quads[6];
+	static sofquadchain_t chains[2];
+	static sofquadchain_t *pointers[2];
+	vec3_t forward, right, up;
+	AngleVectors(fx_fd.viewangles,forward,right,up);
+	memset(quads,0,sizeof(quads)); memset(chains,0,sizeof(chains));
+	for(int c=0;c<2;c++) {
+		sofquadchain_t *chain=&chains[c];
+		pointers[c]=chain; chain->first=&quads[c*3]; chain->count=3;
+		chain->weight=lod?10000000:0;
+		for(int k=0;k<3;k++) { chain->mins[k]=1e20f; chain->maxs[k]=-1e20f; }
+		for(int i=0;i<3;i++) {
+			sofalphaquad_t *q=&quads[c*3+i];
+			q->flags=SOF_AQ_BILLBOARD|SOF_AQ_ADDITIVE;
+			if(c) q->flags|=SOF_AQ_BATCHED|SOF_AQ_NODEPTH;
+			else if(i==1) q->flags=SOF_AQ_BILLBOARD|SOF_AQ_ORIENTED|SOF_AQ_LIT;
+			if(lod && !c && i==2) q->flags|=SOF_AQ_DRAWN;
+			q->texname="textures/sprites/whitestreak"; q->leaf=-1; q->lightdir=255;
+			q->v0c[0]=c?12:6; q->v0c[1]=c?16:10; q->f18=1;
+			q->color[0]=i==0?255:80; q->color[1]=i==1?255:80;
+			q->color[2]=i==2?255:80; q->color[3]=192;
+			q->next=i<2?q+1:NULL;
+			for(int k=0;k<3;k++) {
+				q->origin[k]=fx_fd.vieworg[k]+forward[k]*96+right[k]*(c?20:-24)+up[k]*((i-1)*16);
+				q->normal[k]=-forward[k];
+				chain->mins[k]=Q_min(chain->mins[k],q->origin[k]-24);
+				chain->maxs[k]=Q_max(chain->maxs[k],q->origin[k]+24);
+			}
+		}
+	}
+	fx_fd.num_alphaquads=0; fx_fd.num_quadchains=2; fx_fd.quadchains=pointers;
+}
+
+static void
+FX_RenderFixture(void)
+{
+	static cvar_t *fixture;
+	static sofalphaquad_t quads[6];
+	static sofalphaquad_t *pointers[6];
+	if (!fixture) fixture = Cvar_Get("om_fxrenderfixture", "0", 0);
+	if (fixture->value <= 0) return;
+	if (fixture->value >= 4) { FX_RenderChainFixture(fixture->value>=5); return; }
+	vec3_t forward, right, up;
+	AngleVectors(fx_fd.viewangles, forward, right, up);
+	memset(quads, 0, sizeof(quads));
+	int count=fixture->value>=3?6:(fixture->value>=2?3:1);
+	for (int i = 0; i < count; i++) {
+		sofalphaquad_t *q = &quads[i];
+		pointers[i] = q;
+		q->flags = i == 2 ? SOF_AQ_BEAM : SOF_AQ_BILLBOARD;
+		if(i==3) q->flags|=SOF_AQ_ADDITIVE;
+		if(i==4) q->flags|=SOF_AQ_DARKEN;
+		if(i==5) q->flags|=SOF_AQ_LIT;
+		q->texname = "textures/sprites/whitestreak";
+		q->leaf = -1;
+		q->lightdir = 255;
+		q->f18 = 1;
+		q->color[0] = i == 0 ? 255 : 80;
+		q->color[1] = i == 1 ? 255 : 80;
+		q->color[2] = i == 2 ? 255 : 80;
+		q->color[3] = i>=3?160:220;
+		float across=i==0 || i==3?-24:20, vertical=i==2?-15:12;
+		if(count>=6 && i==2) vertical=-32;
+		if(i==3 || i==4) vertical=-12;
+		if(i==5) { across=0; vertical=30; q->color[0]=q->color[1]=q->color[2]=255; }
+		for (int k = 0; k < 3; k++)
+			q->origin[k] = fx_fd.vieworg[k] + forward[k]*96 +
+				right[k]*across + up[k]*vertical;
+		if (i == 2) {
+			q->f18 = 2.5f;
+			for (int k = 0; k < 3; k++) q->v0c[k] = q->origin[k] - right[k]*40;
+		} else {
+			q->v0c[0] = 8; q->v0c[1] = 12;
+			if (i == 1) {
+				q->flags |= SOF_AQ_ORIENTED;
+				for (int k = 0; k < 3; k++) q->normal[k] = -forward[k];
+			}
+		}
+	}
+	fx_fd.num_quadchains = 0;
+	fx_fd.num_alphaquads = count;
+	fx_fd.alphaquads = pointers;
+}
+
 const sofrefexport_t *
 FX_Ref(void)
 {
@@ -207,6 +297,7 @@ CLFX_RenderFrame(refdef_t *rd)
 	fx_fd.scratch = NULL;
 
 	FX_ViewOverride();
+	FX_RenderFixture();
 	FX_SceneDump();
 	re->RenderFrame(&fx_fd);
 }
@@ -248,6 +339,17 @@ FX_SceneDump(void)
 	fprintf(f, "RenderFrame org(%g %g %g) ang(%g %g %g) time %g ents %d chains %d quads %d\n", fx_fd.vieworg[0],
 			fx_fd.vieworg[1], fx_fd.vieworg[2], fx_fd.viewangles[0], fx_fd.viewangles[1], fx_fd.viewangles[2],
 			fx_fd.time, fx_fd.num_entities, fx_fd.num_quadchains, fx_fd.num_alphaquads);
+	for (i=0;i<fx_fd.num_entities;i++) {
+		const sofentity_t *entity=fx_fd.entities[i];
+		const char *name="(unregistered)";
+		if (!entity) continue;
+		if (entity->flags&SOF_RF_GHOUL) name="(ghoul instance)";
+		else if (entity->model) for (int model=1;model<MAX_MODELS;model++)
+			if ((void *)cl.model_draw[model]==entity->model) { name=cl.configstrings[CS_MODELS+model]; break; }
+		fprintf(f,"  entity %d %s flags %08x org(%g %g %g) angles(%g %g %g)\n",i,name,
+			entity->flags,entity->origin[0],entity->origin[1],entity->origin[2],
+			entity->angles[0],entity->angles[1],entity->angles[2]);
+	}
 
 	for (i = 0; i < fx_fd.num_alphaquads; i++)
 	{

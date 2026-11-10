@@ -31,6 +31,8 @@
 
 #ifdef _WIN32
 #define SNDH_MODULE "OMsnd.dll"
+#elif defined(__APPLE__)
+#define SNDH_MODULE "OMsnd.dylib" /* OpenMerc macOS build: native Mach-O module name */
 #else
 #define SNDH_MODULE "OMsnd.so"
 #endif
@@ -67,6 +69,7 @@ typedef struct sndexport_s
 	void (*A3D_ExportRenderGeom)(void *refexport);
 	void (*EAX_SetEnvironment)(int environment);
 	void (*EAX_SetEnvironmentLevel)(void);
+	void (*OmMenuMusic)(const char *name); /* RLabs: OMsnd only */
 } sndexport_t;
 
 static const char *snd_mandatory[20] = {
@@ -371,6 +374,7 @@ SNDH_Load(void)
 
 	snd.A3D_ExportRenderGeom = SNDH_Proc("S_A3D_ExportRenderGeom");
 	snd.EAX_SetEnvironment = SNDH_Proc("SNDEAX_SetEnvironment");
+	snd.OmMenuMusic = SNDH_Proc("S_OmMenuMusic");
 	snd.EAX_SetEnvironmentLevel = SNDH_Proc("SNDEAX_SetEnvironmentLevel");
 
 	/* S_A3D_ExportRenderGeom needs the SoF renderer export table
@@ -714,6 +718,16 @@ SNDH_ParseSoundInfo(int flags)
 		{
 			snd.SetSoundProcType((unsigned char)v);
 		}
+	}
+}
+
+/* RLabs: music behind the main menu (cl_menuscene.c); NULL or "" fades it out */
+void
+SNDH_MenuMusic(const char *set)
+{
+	if (snd_library && snd.OmMenuMusic)
+	{
+		snd.OmMenuMusic(set ? set : "");
 	}
 }
 

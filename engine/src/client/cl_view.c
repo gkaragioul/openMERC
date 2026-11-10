@@ -278,6 +278,7 @@ CL_PrepRefresh(void)
 		SCR_UpdateScreen();
 	}
 
+	CL_MenuScene_Forget(); /* RLabs: the level takes the registration */
 	R_BeginRegistration (mapname);
 
 	/* precache status bar pics */
@@ -355,6 +356,7 @@ CL_PrepRefresh(void)
 	rotate = (float)strtod(cl.configstrings[CS_SKYROTATE], (char **)NULL);
 	sscanf(cl.configstrings[CS_SKYAXIS], "%f %f %f", &axis[0], &axis[1], &axis[2]);
 	R_SetSky(cl.configstrings[CS_SKY], rotate, axis);
+	HUD_SelectLevelTerrain();
 
 	Com_Printf("                                     \r");
 

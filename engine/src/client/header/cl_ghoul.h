@@ -52,6 +52,7 @@ void CL_Ghoul_RunFrame(float frametime);
 void CL_Ghoul_ViewRebuild(void);
 /* game clock (SPEC-202 section 5): the estimate now, seconds */
 float CL_Ghoul_GameClock(void);
+int CL_Ghoul_ClockSettled(void); /* RLabs: the clock agrees with the last svc_frame */
 /* SPEC-002 frame record 0x48 / 0x4c / 0x50 as the last view rebuild set them */
 void CL_Ghoul_FrameRecordClock(float *old, float *delta, float *now);
 /* auto-rotate yaw of effect 0x2000 (SPEC-AMEND-006 I1c.7: real-time clock), degrees */
@@ -81,6 +82,11 @@ void CLG_StartAccepting(void);
 void CLG_Purge(void);
 void CLG_Reset(void);
 void *CLG_FindInstance(int handle);
+void CLG_RotateInstance(int handle, float x, float y, float z); /* SPEC-400 effect bit 0x0001 */
+/* RLabs (weapon prediction): an instance the client made itself (a clone) has a positive id of its own; the
+   handle that finds it again (and that the renderer takes in entity_t.frame) is minus that id */
+int CLG_LocalHandle(void *instance);
+void CLG_SetUserValue(void *instance, void *value);
 void CLG_GetTransform(void *instance, float m16[16]);
 void CLG_SetTransform(void *instance, const float m16[16]);
 void CLG_DrawMenu(void *instance, float x, float y, float time, int camerapart, int notexturestack);

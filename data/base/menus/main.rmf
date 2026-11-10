@@ -1,6 +1,7 @@
-<!-- OpenMerc MENU-SCRATCH: the main menu is the rail + landing page (owner
-     t91u/t94u); the animated ARC globe menu is removed and "menu amain"
-     opens this screen (menu.c M_OpenMenu) -->
+<!-- OpenMerc MENU-SCRATCH: "menu amain" opens this screen (menu.c M_OpenMenu).
+     RLabs (play-test 2026-11-05: "main menu looks very complicated, feels not related to the game. Multiplayer needs
+     to be hidden"): a plain title screen - the game's own logo and one column of buttons over a live level
+     (cl_menuscene.c, menus/om_scene.txt); no rail, tabs or ticker, no multiplayer -->
 <stm>
 <strings menu_generic>
 <strings menu_omset>
@@ -14,7 +15,5 @@
 <include om_tints>
 <set scr_menuoverlay 1>
 
-<frame topic 0 92 page t_omhome center>
-<frame main 640 372 border 40 0 clear backfill clear>
-<frame home 0 0 page m_omhome cut main>
+<frame home 640 480 page m_omhome>
 </stm>

@@ -1325,6 +1325,14 @@ void S_SetSoundProcType(unsigned char type)
         EFX_SetProcType(type);
 }
 
+/* RLabs: music behind the main menu (snd_music.c Mus_Menu); optional, looked up by the engine by name */
+void S_OmMenuMusic(const char *name)
+{
+    if (!s_started)
+        return;
+    Mus_Menu(name);
+}
+
 /* EAXSnd's optional exports (SPEC-004); SoF.exe 1.07f resolves but never calls them */
 void SNDEAX_SetEnvironment(int environment)
 {

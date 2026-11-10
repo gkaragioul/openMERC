@@ -61,6 +61,7 @@ static struct {
 
 static track_t tracks[NTRACKS];
 static int mstate, designer, lastmode, intensity;
+static qboolean menu_music; /* RLabs: the set plays behind the main menu (Mus_Menu), outside a level */
 
 static const char *track_names[NTRACKS] = {"calm", "middle", "action", "unused", "designer"};
 static const char *state_names[3] = {"none", "playing", "silenced"};
@@ -329,6 +330,7 @@ void Mus_Shutdown(void)
 
 void Mus_Register(const char *name)
 {
+    menu_music = false;
     free_set();
     if (!s_musicenabled->value || !name || !name[0] || !strcmp(name, "(null)"))
         return;
@@ -342,6 +344,44 @@ void Mus_Force(const char *name, qboolean have_name)
     free_set();
     if (have_name && name && name[0] && strcmp(name, "(null)"))
         load_set(name);
+}
+
+/* RLabs 2026-11-05 (play-tester: the main menu "should have music"): the calm track of a music set behind the main
+   menu while no level runs, from the player's own game data. name NULL/"" fades it out. A level's own set
+   (Mus_Register) replaces it as usual. */
+static void fade(int t, int target, int duration);
+static void silence_all(int duration);
+static qboolean music_active(void);
+
+static int same_name(const char *a, const char *b)
+{
+    for (; *a && *b; a++, b++)
+        if ((*a | 0x20) != (*b | 0x20))
+            return 0;
+    return *a == *b;
+}
+
+void Mus_Menu(const char *name)
+{
+    if (name && name[0]) {
+        if (!s_musicenabled->value)
+            return;
+        if (!mset.loaded || !same_name(mset.name, name)) {
+            free_set();
+            load_set(name);
+        }
+        menu_music = true;
+        if (!music_active() || lastmode == 2)
+            return;
+        mstate = S_NONE;
+        designer = 0;
+        fade(T_CALM, 255, FADE_IN);
+        lastmode = 2;
+        intensity = 0;
+    } else if (music_active() && lastmode == 2 && !Snd_ClientActive()) {
+        silence_all(FADE_OUT);
+        lastmode = 1;
+    }
 }
 
 /* ---- state machine (SPEC-040 5.3) ------------------------------------------------------------------------- */
@@ -578,7 +618,7 @@ static void stream_track(int t)
             mout[t].freebuf[mout[t].nfree++] = b;
     }
 
-    audible = s_musicenabled->value && Snd_ClientActive() && tr->level > 0 && tr->piece >= 0;
+    audible = s_musicenabled->value && (Snd_ClientActive() || menu_music) && tr->level > 0 && tr->piece >= 0;
     gain = audible ? (float)(int)(tr->level * s_musicvolume->value) / 256.0f : 0.0f;
     alSourcef(src, AL_GAIN, gain > 0 ? gain : 0.0f);
     if (!audible) {

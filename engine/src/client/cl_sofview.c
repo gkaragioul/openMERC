@@ -240,10 +240,19 @@ CL_SoF_UpdateSway(const vec3_t origin, int guntype)
 	vz = (origin[2] - sway.prev[2]) / ft;
 	VectorCopy(origin, sway.prev);
 
-	/* 2 */
-	if (s < ft * sway.smooth * 200)
+	/* 2: the rule (keep 3/4 of the old speed while the new one is not a jump) is per frame. RLabs Mac port: made
+	   frame-rate independent around 30 fps, where it is unchanged; at 120-144 fps the per-frame rule barely
+	   smoothed, and the noisy per-frame speed (1/8-unit positions, uneven frame times) shook the gun while
+	   walking. Recorded-walk simulation: frame-to-frame sway jitter / 4, same sway size. */
 	{
-		s = (3 * sway.smooth + s) / 4;
+		const float ref = 1.0f / 30.0f;
+
+		if (s < ref * sway.smooth * 200)
+		{
+			const float w = powf(0.75f, ft / ref);
+
+			s = w * sway.smooth + (1.0f - w) * s;
+		}
 	}
 
 	sway.smooth = s;

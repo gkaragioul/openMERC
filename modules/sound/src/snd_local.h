@@ -283,6 +283,7 @@ void Mus_Update(void);                   /* state machine and fades, once per fr
 void Mus_Stop(void);                     /* silence the music sources at once (stopsound) */
 void Mus_Shutdown(void);
 void Mus_Info(void);
+void Mus_Menu(const char *name);         /* RLabs: calm track behind the main menu; NULL fades it out */
 int Mus_TakeDryCount(void);              /* s_om_debug 16: music sources that ran out of queued samples */
 
 /* ---- snd_efx.c (EAX environments as an EFX reverb slot every game voice sends to, s_om_reverb) ---------- */

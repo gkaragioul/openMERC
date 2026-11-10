@@ -634,11 +634,26 @@ bool Inventory::SwitchToSlot(int slot, bool dictated)
     (void)dictated;
     if (slot < 0 || slot >= NUM_WSLOTS)
         return false;
+    if (IsClient() && dictated && slot == st.curSlot && st.curWeapon) {
+        /* RLabs Mac port (deviation, docs/DEVIATIONS.md): the server dictates a new in-view instance for the weapon
+           the predictor believes it already holds (its view of the slots was out of step, e.g. a prediction restart
+           read the player state before the server's new instance was in it). The original ignored the request and
+           kept the synchronised flag, so the predictor stayed on its old model and missed every later switch too
+           (2026-11-05 trace: the shotgun drawn and animated while the server held and fired the pistol). Adopt the
+           server's instance now; its draw clears the flag. */
+        PmTrace("SwitchToSlot cl slot %d already current: adopting the server's new instance", slot);
+        st.targetSlot = slot;
+        st.switchNow = 1;
+        SwitchFollower();
+        return true;
+    }
     if (slot == st.curSlot && st.curWeapon)
         return false;
     if (IsClient()) {
         /* SPEC-602 Behaviour 4: the predictor plays its own put-away; without one (or without a weapon) the
            follower completes at once from the server's instance (observed: adopted in the same think) */
+        PmTrace("SwitchToSlot cl slot %d (cur slot %d weapon %d anim %d inst %d) put-away %s", slot, st.curSlot,
+                st.curWeapon, st.animWeapon, PmInstId(st.inst), PutawaySeq() ? PutawaySeq() : "-");
         st.targetSlot = slot;
         if (st.curWeapon && st.inst) {
             DeselectRule();

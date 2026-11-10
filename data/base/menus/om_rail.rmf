@@ -21,18 +21,7 @@
 <font type medium tint normaltext atint hilitetext>
 <text "^MENU_OMSET_RAIL_CREDITS^" btint transgray width 176 currentif menu_omrail_cur 4 key mouse1 "menu credits"><br>
 <hbr>
-<font type title tint orange atint orange>
-<text "^MENU_OMSET_RAIL_MULTI^">
-<hr width 176 tint gray>
-<font type medium tint normaltext atint hilitetext>
-<text "^MENU_OMSET_RAIL_PLAYER^" btint transgray width 176 currentif menu_omrail_cur 5 key mouse1 "stopsound;menu player2"><br>
-<font type medium tint normaltext atint hilitetext>
-<text "^MENU_OMSET_RAIL_JOIN^" btint transgray width 176 currentif menu_omrail_cur 6 key mouse1 "menu join"><br>
-<font type medium tint normaltext atint hilitetext>
-<text "^MENU_OMSET_RAIL_START^" btint transgray width 176 currentif menu_omrail_cur 7 key mouse1 "menu start"><br>
-<font type medium tint normaltext atint hilitetext>
-<text "^MENU_OMSET_RAIL_MPOPTIONS^" btint transgray width 176 currentif menu_omrail_cur 8 key mouse1 "menu options"><br>
-<hbr>
+<comment RLabs 2026-11-05 (play-test): no multiplayer rows - single player only>
 <font type title tint orange atint orange>
 <text "^MENU_OMSET_RAIL_OPTIONS^">
 <hr width 176 tint gray>

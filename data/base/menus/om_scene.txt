@@ -1,0 +1,13 @@
+# RLabs: the live level behind the main menu (engine/src/client/cl_menuscene.c), play-test 2026-11-05:
+# "a live game scene" - New York (nyc1, the first mission), from the player's own game data.
+# One map; each shot glides from the first camera to the second over <seconds>, fading through black.
+# shot <seconds>  <x y z> <pitch yaw>  <x y z> <pitch yaw>
+map nyc1
+# its music: the calm track of the first mission
+music NYC1
+# the skyline over the rooftops, a slow pan
+shot 24  264 1752 60 -4 212  236 1724 64 -6 238
+# down the street between the towers, a slow push in
+shot 22  56 3560 -96 -3 268  56 3420 -92 -4 272
+# the alley, a slow turn
+shot 22  -1200 1376 -96 -2 348  -1180 1384 -96 -3 16

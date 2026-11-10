@@ -423,6 +423,7 @@ void MWD_Layout(mscreen_t *scr, qboolean nav);
 void MWD_DefaultFrame(mscreen_t *scr, mframe_t *f);
 qboolean MWD_Frame(mscreen_t *scr, mframe_t *f, const char *cut, int W, int H, qboolean *nopage);
 void MWD_Chrome(const char *name, int x, int y, int w, int h, int hover);
+void MWD_HudButton(int x, int y, int w, int h, int lit, int *sx, int *sw);
 void MWD_DrawBackground(int x, int y, int w, int h);
 void MWD_DrawChrome(mscreen_t *scr);
 qboolean MWD_FrameWell(mscreen_t *scr, mframe_t *f, int x, int y, int w, int h);

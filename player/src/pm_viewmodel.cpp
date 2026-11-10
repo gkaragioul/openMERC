@@ -344,9 +344,12 @@ bool Inventory::Play(const char *name, int mode, float start)
     char path[256];
     seq_path(path, sizeof(path), st.animWeapon, name);
     GhoulID seq = obj->FindSequence(path);
-    if (!seq)
+    if (!seq) {
+        PmTrace("Play %s %s MISSING (%s, weapon %d)", IsClient() ? "cl" : "sv", name, path, st.animWeapon);
         return false;
+    }
     float t = start < 0.f ? Now() : start;
+    PmTrace("Play %s %s mode %d t %.4f now %.4f", IsClient() ? "cl" : "sv", name, mode, t, Now()); /* om_pmtrace / OM_PMTRACE: every weapon animation start */
     st.inst->Play(seq, t, 0.f, true, mode, false, false);
     Q_strncpyz(st.seqName, name, sizeof(st.seqName));
     return true;
