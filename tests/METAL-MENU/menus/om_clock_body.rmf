@@ -1,0 +1,15 @@
+<stm>
+<comment SPDX-License-Identifier: GPL-2.0-or-later>
+<font type small>
+<text "Clipped text, controls and fixed cursor" regular border 2 1 gray>
+<br>
+<hr width 180 line 2 tint 0xff0000ff>
+<br>
+<input cvar om_clock_text width 140 maxchars 64 global>
+<br>
+<slider cvar om_clock_slider min 0 max 10 step 1>
+<br>
+<list "Red,Green,Blue" cvar om_clock_list>
+<br>
+<text "Long content to exercise the remembered clip rectangle and frame edges" regular>
+</stm>

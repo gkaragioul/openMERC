@@ -829,6 +829,14 @@ Flush(void)
 	{
 		return;
 	}
+	/* Development-only material boundary diagnostic, opt-in and bounded. */
+	static int trace_batches;
+	if (getenv("OM_GHOUL_MATERIAL_TRACE") && trace_batches++ < 64)
+	{
+		Com_Printf("ghoul GL batch count %d lighting %d texenv %d texswz %d gens %d gent %d firstcolour %.4f %.4f %.4f st %.4f %.4f\n",
+			count, E.lighting, TexEnvIndex(), TexSwizzle(E.boundtex), E.gens, E.gent,
+			E.verts[0].rgba[0], E.verts[0].rgba[1], E.verts[0].rgba[2], E.verts[0].st[0], E.verts[0].st[1]);
+	}
 
 	/* every primitive becomes at most 3 * count vertices */
 	if (E.maxtris < 3 * count)

@@ -1,0 +1,7 @@
+<stm>
+<comment SPDX-License-Identifier: GPL-2.0-or-later>
+<comment Stock model names only. No game asset is copied into the repository.>
+<bghoul "b_web_home_ingame" xoff 320 yoff 224 time 0.0 scale 1.32>
+<ghoul "constant_b_globe" time 0.0 bgbolt "b_center_circle" "a_center_circle">
+<ghoul "m_globe" time 0.0 gbolt "b_globe" "a_globe">
+</stm>

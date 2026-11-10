@@ -1,0 +1,5 @@
+<stm>
+<comment SPDX-License-Identifier: GPL-2.0-or-later>
+<frame topic 0 48 page om_clock_title>
+<frame main 320 176 page om_clock_body>
+</stm>

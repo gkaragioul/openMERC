@@ -1,0 +1,5 @@
+<stm>
+<comment SPDX-License-Identifier: GPL-2.0-or-later>
+<comment Placed player preview with its own deterministic key/ambient light.>
+<gpm om_clock_skin om_clock_team cvari om_clock_player width 240 height 260 rotation 1.5708 1.1345 0 rotate 0 0 0 time 0.0>
+</stm>

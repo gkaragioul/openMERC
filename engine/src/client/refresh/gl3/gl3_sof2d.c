@@ -1617,6 +1617,9 @@ GL3_SoF_ScreenShotFrame(void)
 	}
 
 	shot_pending = 0;
+	/* the user folder may not exist yet (menu before any map load); mkdir does not make parents */
+	Com_sprintf(path, sizeof(path), "%s", GL3_UserDir());
+	MKDIR(path);
 	Com_sprintf(path, sizeof(path), "%s/scrnshot", GL3_UserDir());
 	MKDIR(path);
 
