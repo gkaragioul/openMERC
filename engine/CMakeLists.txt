@@ -92,7 +92,13 @@ else() # GCC/clang/mingw
 #  -fno-strict-aliasing -> Quake 2 is far away from strict aliasing
 #  -fwrapv              -> Make signed integer overflows defined
 #  -fvisibility=hidden	-> Force defaultsymbol visibility to hidden
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -fno-strict-aliasing -fwrapv -fvisibility=hidden")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -fno-strict-aliasing -fwrapv")
+# OpenMerc macOS: no -fvisibility=hidden on Darwin. The renderer modules are loaded as Mach-O
+# bundles that resolve engine symbols (Hunk_Alloc, FS_*, Com_*) by name at run time; hiding them
+# makes those lookups resolve to nothing and the module crashes on first allocation.
+if(NOT APPLE)
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fvisibility=hidden")
+endif()
 
 # Use -O2 as maximum optimization level. -O3 has its problems with yquake2.
 string(REPLACE "-O3" "-O2" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
@@ -403,6 +409,8 @@ set(Client-Source
 	${CLIENT_SRC_DIR}/cl_hud.c
 	${CLIENT_SRC_DIR}/cl_sofscreen.c
 	${CLIENT_SRC_DIR}/cl_sofview.c
+	${CLIENT_SRC_DIR}/cl_menuscene.c
+	${CLIENT_SRC_DIR}/cl_graphics.c
 	${CLIENT_SRC_DIR}/cl_strings.c
 	${CLIENT_SRC_DIR}/input/winkeys.c
 	# OpenMerc (I1c): the Ghoul client system (svc 26/27, renderer hand-off, view weapon, menu models)
@@ -685,15 +693,50 @@ else()
 			${Platform-Specific-Source} ${Backends-Generic-Source})
 	target_link_libraries(openMerc ${yquake2LinkerFlags} ${yquake2ClientLinkerFlags}
 		${yquake2SDLLinkerFlags} ${yquake2ZLibLinkerFlags})
+	# OpenMerc: the SoF engine functions OMsnd looks up by name (src/common/sof_exports.dynlist).
+	# The compile definition makes shared.h redeclare them with default visibility, which the engine's
+	# global -fvisibility=hidden would otherwise take away. ELF additionally needs the dynamic list;
+	# Mach-O exports default-visibility symbols from an executable on its own.
+	target_compile_definitions(openMerc PRIVATE OM_SOF_ELF_EXPORTS)
 	if(NOT APPLE)
-		# OpenMerc: the SoF engine functions OMsnd looks up by name (src/common/sof_exports.dynlist)
 		target_link_options(openMerc PRIVATE "-Wl,--dynamic-list=${CMAKE_CURRENT_SOURCE_DIR}/src/common/sof_exports.dynlist")
-		target_compile_definitions(openMerc PRIVATE OM_SOF_ELF_EXPORTS)
 		set_target_properties(openMerc PROPERTIES LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/common/sof_exports.dynlist)
 	endif()
 endif()
 set_target_properties(openMerc PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/release)
 target_link_libraries(openMerc omghoul) # OpenMerc I1b: Ghoul services of the server
+if(APPLE)
+	# RLabs kit: small Mac helpers -- one pointer over the game window and the 120 Hz switch. Without it
+	# the engine builds with SDL's own cursor handling only.
+	# Default: the kit inside this project (<repo>/rlabs-kit). RLABS_KIT (environment or -DRLABS_KIT=<dir>)
+	# names another copy; a cached folder that no longer has the kit falls back to the project's own.
+	set(RLABS_KIT_PROJECT "${CMAKE_CURRENT_SOURCE_DIR}/../rlabs-kit")
+	if(DEFINED ENV{RLABS_KIT})
+		set(RLABS_KIT "$ENV{RLABS_KIT}" CACHE PATH "RLabs kit folder" FORCE)
+	elseif(NOT DEFINED RLABS_KIT OR NOT EXISTS "${RLABS_KIT}/macos/rlk_pointer.m")
+		set(RLABS_KIT "${RLABS_KIT_PROJECT}" CACHE PATH "RLabs kit folder" FORCE)
+	endif()
+	set(RLK_MACOS "${RLABS_KIT}/macos")
+	if(EXISTS "${RLK_MACOS}/rlk_pointer.m")
+		enable_language(OBJC)
+		target_sources(openMerc PRIVATE "${RLK_MACOS}/rlk_pointer.m" "${RLK_MACOS}/rlk_display.m"
+			"${RLK_MACOS}/rlk_vrr.m")
+		target_include_directories(openMerc PRIVATE "${RLK_MACOS}")
+		target_compile_definitions(openMerc PRIVATE OM_RLABS_KIT=1)
+		set_source_files_properties("${RLK_MACOS}/rlk_pointer.m" "${RLK_MACOS}/rlk_display.m"
+			"${RLK_MACOS}/rlk_vrr.m" PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+		target_link_libraries(openMerc "-framework AppKit" "-framework CoreGraphics")
+	else()
+		message(WARNING "rlabs-kit not found at ${RLK_MACOS}: building without the shared Mac pointer/refresh helpers")
+	endif()
+	# kit input: mouse movement resampled to frame times (the Thief Gold Mac port), plain C
+	set(RLK_INPUT "${RLABS_KIT}/input")
+	if(EXISTS "${RLK_INPUT}/rlk_mouse_motion.c")
+		target_sources(openMerc PRIVATE "${RLK_INPUT}/rlk_mouse_motion.c")
+		target_include_directories(openMerc PRIVATE "${RLK_INPUT}")
+		target_compile_definitions(openMerc PRIVATE OM_RLK_MOUSE=1)
+	endif()
+endif()
 if(SDL3_SUPPORT)
 	target_link_libraries(openMerc SDL3::SDL3)
 endif()
@@ -771,6 +814,50 @@ if(SDL3_SUPPORT)
 	target_link_libraries(ref_gles3 SDL3::SDL3)
 endif()
 
+endif()
+
+# OpenMerc macOS: native Metal renderer (no OpenGL). See docs/METAL.md.
+if(APPLE)
+	enable_language(OBJC)
+
+	set(METAL-Source
+		${REF_SRC_DIR}/metal/mtl_main.m
+		${REF_SRC_DIR}/files/common.c
+		${REF_SRC_DIR}/files/models.c
+		${REF_SRC_DIR}/files/pcx.c
+		${REF_SRC_DIR}/files/stb.c
+		${REF_SRC_DIR}/files/surf.c
+		${REF_SRC_DIR}/files/wal.c
+		${REF_SRC_DIR}/files/pvs.c
+		${COMMON_SRC_DIR}/shared/shared.c
+		${COMMON_SRC_DIR}/md4.c
+		)
+
+	add_library(ref_metal MODULE ${METAL-Source})
+	set_target_properties(ref_metal PROPERTIES
+			PREFIX ""
+			LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/release
+			SUFFIX ".dylib"
+			)
+	set_source_files_properties(${REF_SRC_DIR}/metal/mtl_main.m PROPERTIES
+			COMPILE_OPTIONS "-fobjc-arc")
+	# the engine executable provides Com_*, Hunk_Alloc, FS_*, ... at run time
+	target_link_options(ref_metal PRIVATE "-Wl,-undefined,dynamic_lookup")
+	# RLabs kit: Apple's Metal Performance HUD as a setting (Mac baseline)
+	set(RLK_MACOS_REF "${RLABS_KIT}/macos")
+	if(EXISTS "${RLK_MACOS_REF}/rlk_hud.m")
+		target_sources(ref_metal PRIVATE "${RLK_MACOS_REF}/rlk_hud.m" "${RLK_MACOS_REF}/rlk_vrr.m")
+		target_include_directories(ref_metal PRIVATE "${RLK_MACOS_REF}")
+		target_compile_definitions(ref_metal PRIVATE OM_RLABS_KIT=1)
+		set_source_files_properties("${RLK_MACOS_REF}/rlk_hud.m" "${RLK_MACOS_REF}/rlk_vrr.m"
+			PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+		target_link_libraries(ref_metal "-framework AppKit")
+	endif()
+	target_link_libraries(ref_metal ${yquake2LinkerFlags} ${yquake2SDLLinkerFlags}
+			"-framework Metal" "-framework QuartzCore" "-framework Foundation")
+	if(SDL3_SUPPORT)
+		target_link_libraries(ref_metal SDL3::SDL3)
+	endif()
 endif()
 
 add_subdirectory(src/ghoul) # OpenMerc I3: Ghoul model system library (C++, SPEC-010..014, 120, 121)

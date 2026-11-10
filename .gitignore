@@ -6,3 +6,24 @@
 *.adp
 __pycache__/
 *.pyc
+
+# --- native macOS / Metal port ---
+# retail game data: CD images and any extracted installation, never commit
+*.iso
+*.bin
+game-data/
+# build trees
+build-macos*/
+release-macos/
+.DS_Store
+
+# macOS app icon made from your own copy of the game's artwork (never committed)
+/tools/build/macos/AppIcon*
+
+# settings, saves and screenshots of development runs: never commit
+/user/
+/C:/
+
+# scratch builds, rollbacks and the playable app with your game data inside: never commit
+/build.nosync/
+/Soldier of Fortune.app/

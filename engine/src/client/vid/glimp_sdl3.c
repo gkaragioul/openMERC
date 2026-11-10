@@ -46,6 +46,17 @@ float glimp_refreshRate = -1.0f;
 
 static cvar_t *vid_displayrefreshrate;
 static cvar_t *vid_displayindex;
+/* RLabs Mac port: the windowed mode fills its screen's desktop, between the menu bar and the Dock (1, the macOS
+   default), instead of a window of the r_mode size (0) */
+static cvar_t *vid_fillwindow;
+#if defined(__APPLE__) && defined(OM_RLABS_KIT)
+/* RLabs kit (rlabs-kit/macos): the proven pointer hide and the 120 Hz switch */
+#include "rlk_pointer.h"
+#include "rlk_display.h"
+#include "rlk_vrr.h"
+static cvar_t *vid_refreshcap;
+static void *MacNSWindow(void);
+#endif
 static cvar_t *vid_highdpiaware;
 static cvar_t *vid_rate;
 
@@ -122,9 +133,10 @@ ClearDisplayIndices(void)
 static qboolean
 CreateSDLWindow(SDL_WindowFlags flags, int fullscreen, int w, int h)
 {
-	if (SDL_WINDOWPOS_ISUNDEFINED(last_position_x) || SDL_WINDOWPOS_ISUNDEFINED(last_position_y) || last_position_x < 0 ||last_position_y < 24)
+	if (SDL_WINDOWPOS_ISUNDEFINED(last_position_x) || SDL_WINDOWPOS_ISUNDEFINED(last_position_y) || last_position_x < 0 || last_position_y < 24)
 	{
-		last_position_x = last_position_y = SDL_WINDOWPOS_UNDEFINED_DISPLAY(displays[(int)vid_displayindex->value]);
+		last_position_x = SDL_WINDOWPOS_CENTERED_DISPLAY(displays[(int)vid_displayindex->value]);
+		last_position_y = SDL_WINDOWPOS_CENTERED_DISPLAY(displays[(int)vid_displayindex->value]);
 	}
 
 	/* Force the window to minimize when focus is lost. This was the
@@ -376,6 +388,12 @@ void GLimp_GrabInput(qboolean grab);
 static void
 ShutdownGraphics(void)
 {
+#if defined(__APPLE__) && defined(OM_RLABS_KIT)
+	/* the 120 Hz screen mode stays across renderer restarts (Apply on the Video page): restoring it here made the
+	   owner's monitor re-sync twice per Apply (144 -> 120 -> 144 -> 120, a black flash each). macOS restores it
+	   when the game quits (kCGConfigureForAppOnly); vid_refreshcap 0 restores it at once. */
+	rlk_pointer_release();
+#endif
 	ClampDisplayIndexCvar();
 
 	if (window)
@@ -407,6 +425,19 @@ ShutdownGraphics(void)
 
 		/* cleanly ungrab input (needs window) */
 		GLimp_GrabInput(false);
+#ifdef __APPLE__
+		/* RLabs: destroying a window that is still full screen makes SDL change its style mask mid-transition;
+		   AppKit throws and the game aborts at quit (crash 2026-11-04 23:49, -[NSWindow setStyleMask:]
+		   from SDL_DestroyWindow). Leave full screen first and let the transition finish. */
+		if (SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN)
+		{
+			SDL_SetWindowFullscreen(window, false);
+			SDL_SyncWindow(window);
+		}
+#endif
+#if defined(__APPLE__) && defined(OM_RLABS_KIT)
+		rlk_pointer_release();
+#endif
 		SDL_DestroyWindow(window);
 
 		window = NULL;
@@ -428,6 +459,16 @@ GLimp_Init(void)
 {
 	vid_displayrefreshrate = Cvar_Get("vid_displayrefreshrate", "-1", CVAR_ARCHIVE);
 	vid_displayindex = Cvar_Get("vid_displayindex", "0", CVAR_ARCHIVE);
+#if defined(__APPLE__) && defined(OM_RLABS_KIT)
+	/* RLabs (design decision 2026-11-03, Time Crisis/Thief): the game's screen runs at a refresh this cap divides
+	   while the game runs (144 Hz -> 120 Hz); 0 leaves the screen alone */
+	vid_refreshcap = Cvar_Get("vid_refreshcap", "120", CVAR_ARCHIVE);
+#endif
+#ifdef __APPLE__
+	vid_fillwindow = Cvar_Get("vid_fillwindow", "1", CVAR_ARCHIVE);
+#else
+	vid_fillwindow = Cvar_Get("vid_fillwindow", "0", CVAR_ARCHIVE);
+#endif
 	vid_highdpiaware = Cvar_Get("vid_highdpiaware", "1", CVAR_ARCHIVE);
 	vid_rate = Cvar_Get("vid_rate", "-1", CVAR_ARCHIVE);
 
@@ -506,6 +547,37 @@ GLimp_Shutdown(void)
 	ClearDisplayIndices();
 }
 
+/* RLabs 2026-11-05: keep viddef at the window's real size. macOS full screen (vid_fullscreen 2, now the default)
+   on a MacBook with a camera notch gives the window the area below the notch (1728x1084 points of a 1728x1117
+   mode); viddef stayed at the mode size and the renderer refused every world view larger than its target (black
+   level behind the menu, run 0065). Points when the window is not high-density, else pixels. */
+void
+GLimp_WindowResized(void)
+{
+	int w = 0, h = 0;
+
+	if (!window)
+	{
+		return;
+	}
+
+	if (SDL_GetWindowFlags(window) & SDL_WINDOW_HIGH_PIXEL_DENSITY)
+	{
+		SDL_GetWindowSizeInPixels(window, &w, &h);
+	}
+	else
+	{
+		SDL_GetWindowSize(window, &w, &h);
+	}
+
+	if (w > 0 && h > 0 && (w != viddef.width || h != viddef.height))
+	{
+		Com_Printf("Window size: %ix%i (was %ix%i)\n", w, h, viddef.width, viddef.height);
+		viddef.width = w;
+		viddef.height = h;
+	}
+}
+
 /*
  * Determine if we want to be high dpi aware. If
  * we are we must scale ourself. If we are not the
@@ -536,6 +608,77 @@ Glimp_DetermineHighDPISupport(SDL_WindowFlags flags)
 /*
  * (Re)initializes the actual window.
  */
+/* The usable desktop of the window's screen (menu bar and Dock excluded), in window coordinates. */
+static qboolean
+GetFillBounds(SDL_Rect *ub)
+{
+	int di = vid_displayindex ? (int)vid_displayindex->value : 0;
+
+	if (!displays || di < 0 || di >= num_displays)
+	{
+		di = 0;
+	}
+
+	if (!displays || !SDL_GetDisplayUsableBounds(displays[di], ub) || ub->w < 320 || ub->h < 240)
+	{
+		return false;
+	}
+
+	return true;
+}
+
+/* vid_fillwindow: size and place the (decorated) window so that its frame fills the usable desktop. Done before
+   the renderer attaches to the window, so the first drawable already has the final size. */
+static void
+FillDesktop(int *pwidth, int *pheight)
+{
+	SDL_Rect ub;
+	int top = 0, left = 0, bottom = 0, right = 0;
+
+	if (!window || !GetFillBounds(&ub))
+	{
+		return;
+	}
+
+	SDL_SyncWindow(window);
+
+	if (!SDL_GetWindowBordersSize(window, &top, &left, &bottom, &right) || top < 0 || top > 200)
+	{
+		top = 32; /* the macOS 26+ title bar */
+		left = bottom = right = 0;
+	}
+
+	/* SDL's border size can be short of the real title bar (28 against 32 measured on macOS 27): ask for the very
+	   top of the desktop, let macOS keep the title bar under the menu bar, and read where the content ended up */
+	{
+		int px = 0, py = 0;
+
+		SDL_SetWindowPosition(window, ub.x + left, ub.y);
+		SDL_SyncWindow(window);
+
+		if (SDL_GetWindowPosition(window, &px, &py) && py - ub.y >= 20 && py - ub.y <= 80)
+		{
+			top = py - ub.y;
+		}
+	}
+
+	int w = ub.w - left - right, h = ub.h - top - bottom;
+
+	SDL_SetWindowSize(window, w, h);
+	SDL_SetWindowPosition(window, ub.x + left, ub.y + top);
+	SDL_SyncWindow(window);
+
+	if (SDL_GetWindowSize(window, &w, &h) && w > 0 && h > 0)
+	{
+		*pwidth = w;
+		*pheight = h;
+	}
+
+	SDL_GetWindowPosition(window, &last_position_x, &last_position_y);
+	Com_Printf("vid_fillwindow: %ix%i at %i,%i (desktop %ix%i at %i,%i, title bar %i)\n", *pwidth, *pheight,
+			last_position_x, last_position_y, ub.w, ub.h, ub.x, ub.y, top);
+}
+
 qboolean
 GLimp_InitGraphics(int fullscreen, int *pwidth, int *pheight)
 {
@@ -658,6 +801,22 @@ GLimp_InitGraphics(int fullscreen, int *pwidth, int *pheight)
 	/* Check for high dpi support. */
 	flags = Glimp_DetermineHighDPISupport(flags);
 
+	const qboolean fill = (fullscreen == FULLSCREEN_OFF) && vid_fillwindow && vid_fillwindow->value != 0;
+
+	if (fill)
+	{
+		SDL_Rect ub;
+
+		if (GetFillBounds(&ub))
+		{
+			/* provisional: FillDesktop() corrects for the real frame once the window exists */
+			width = ub.w;
+			height = ub.h - 28;
+			last_position_x = ub.x;
+			last_position_y = ub.y + 28;
+		}
+	}
+
 	/* Mkay, now the hard work. Let's create the window. */
 	cvar_t *gl_msaa_samples = Cvar_Get("r_msaa_samples", "8", CVAR_ARCHIVE);
 
@@ -716,6 +875,44 @@ GLimp_InitGraphics(int fullscreen, int *pwidth, int *pheight)
 	}
 
 	last_flags = flags;
+
+	if (fill && !(flags & fs_flag))
+	{
+		FillDesktop(&width, &height);
+		*pwidth = width;
+		*pheight = height;
+	}
+
+#if defined(__APPLE__) && defined(OM_RLABS_KIT)
+	/* the filled window or full screen: run the screen at a refresh the frame-rate cap divides */
+	if (vid_refreshcap && vid_refreshcap->value <= 0)
+	{
+		rlk_display_restore();
+	}
+	else if (vid_refreshcap && (flags & fs_flag) && Cvar_VariableValue("r_vrr") != 0 &&
+		Cvar_VariableValue("r_vsync") != 0 && rlk_vrr_screen_range(MacNSWindow(), NULL, NULL))
+	{
+		/* RLabs: a variable-refresh screen in full screen shows the cap as it is (ref_metal presents when ready);
+		   a fixed mode would turn its Adaptive-Sync off (rlk_vrr.h) */
+		rlk_display_restore();
+		Com_Printf("display: variable refresh screen, no refresh switch\n");
+	}
+	else if (vid_refreshcap && (fill || (flags & fs_flag)))
+	{
+		char line[160];
+		const int hz = rlk_display_match_refresh(MacNSWindow(), (int)vid_refreshcap->value, line, sizeof line);
+
+		if (line[0])
+		{
+			Com_Printf("%s\n", line);
+		}
+
+		if (hz > 0)
+		{
+			glimp_refreshRate = -1; /* read the new rate */
+		}
+	}
+#endif
 
 	/* Now that we've got a working window print its mode. */
 	int curdisplay;
@@ -791,11 +988,14 @@ GLimp_InitGraphics(int fullscreen, int *pwidth, int *pheight)
 
 	Com_Printf("Drawable size: %ix%i\n", viddef.width, viddef.height);
 
+	/* the window may already differ from the mode (macOS full screen below a camera notch) */
+	GLimp_WindowResized();
+
 	/* Set the window icon - For SDL2, this must be done after creating the window */
 	SetSDLIcon();
 
 	/* No cursor */
-	SDL_ShowCursor();
+	SDL_HideCursor();
 
 	initSuccessful = true;
 
@@ -812,21 +1012,62 @@ GLimp_ShutdownGraphics(void)
 	ShutdownGraphics();
 }
 
+#if defined(__APPLE__) && defined(OM_RLABS_KIT)
+static void *
+MacNSWindow(void)
+{
+	return window ? SDL_GetPointerProperty(SDL_GetWindowProperties(window), SDL_PROP_WINDOW_COCOA_WINDOW_POINTER,
+		NULL) : NULL;
+}
+#endif
+
 /*
  * (Un)grab Input
  */
 void
 GLimp_GrabInput(qboolean grab)
 {
+#ifdef __APPLE__
+	/* RLabs Mac port: the windowed game keeps the pointer inside its window while it has focus, menus included,
+	   so the macOS arrow never wanders off the game (Cmd+Tab still leaves). */
+	const qboolean focused = window != NULL && (SDL_GetWindowFlags(window) & SDL_WINDOW_INPUT_FOCUS);
+
+	if(window != NULL)
+	{
+		SDL_SetWindowMouseGrab(window, (grab || focused) ? true : false);
+	}
+
+#ifdef OM_RLABS_KIT
+	/* one pointer: the kit hides the macOS arrow over the focused game window every frame (menus draw their own
+	   cursor) and shows it again outside the window */
+	rlk_pointer_update(MacNSWindow(), focused);
+#endif
+#else
 	if(window != NULL)
 	{
 		SDL_SetWindowMouseGrab(window, grab ? true : false);
 	}
+#endif
 
 	if(!SDL_SetWindowRelativeMouseMode(window, grab ? true : false))
 	{
 		Com_Printf("WARNING: Setting Relative Mousemode failed, reason: %s\n", SDL_GetError());
 	}
+
+#ifdef __APPLE__
+	{ /* a line in the run log whenever the mouse capture changes (for bug reports) */
+		static int last = -1;
+		int now = (grab ? 1 : 0) | (focused ? 2 : 0) | ((window && SDL_GetWindowRelativeMouseMode(window)) ? 4 : 0) |
+			((window && SDL_GetWindowMouseGrab(window)) ? 8 : 0) | ((SDL_GetMouseFocus() == window) ? 16 : 0);
+
+		if (now != last)
+		{
+			Com_Printf("[MOUSE] want_grab=%d focus=%d relative=%d confined=%d pointer_in_window=%d\n", now & 1,
+				(now >> 1) & 1, (now >> 2) & 1, (now >> 3) & 1, (now >> 4) & 1);
+			last = now;
+		}
+	}
+#endif
 }
 
 /*
@@ -952,6 +1193,15 @@ GLimp_GetDesktopMode(int *pwidth, int *pheight)
 		   the renderer to GLimp_InitGraphics(), however
 		   that would break the renderer API. */
 		SDL_DisplayID current = SDL_GetPrimaryDisplay();
+
+		/* RLabs: the screen the window will open on (vid_displayindex), not always the main one; full screen
+		   on a second, smaller screen asked for the main screen's size and fell back to a 640x480 window
+		   (run 0018, 2026-11-05) */
+		if (vid_displayindex && displays && (int)vid_displayindex->value >= 0 &&
+			(int)vid_displayindex->value < num_displays)
+		{
+			current = displays[(int)vid_displayindex->value];
+		}
 
 		if (current == 0)
 		{

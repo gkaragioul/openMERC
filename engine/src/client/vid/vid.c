@@ -288,6 +288,8 @@ VID_Stage_f(void)
 	}
 }
 
+static void VID_Restart_f(void); /* RLabs: Apply restarts only when needed */
+
 /*
  * OpenMerc MENU2: `om_vidapply` - Apply of the resolution row (menus/applyvid.cfg):
  * "desktop" gives r_mode -2, "WxH" r_mode -1 with r_customwidth/height, a plain
@@ -298,6 +300,30 @@ VID_Apply_f(void)
 {
 	const char *m = Cvar_VariableString("menu_mode");
 	int w = 0, h = 0;
+	/* RLabs (2026-11-05, play-tester: "when i was playing, game mode was off. does it have to do with changing graphics
+	 * settings?"): Apply used to restart the renderer every time. The restart rebuilds the full-screen window and
+	 * macOS drops Game Mode while it does (gamepolicyd: unavailable, paused, on again). Only full screen/window,
+	 * brightness (baked into the uploaded textures) and the resolution need a restart; the rest applies live.
+	 * applyvid.cfg leaves those three to this command, and the Apply button no longer runs vid_restart. */
+	char mode_before[64], cw_before[32], ch_before[32];
+	qboolean restart = false;
+	const char *fs = Cvar_VariableString("menu_fullscreen");
+	const char *br = Cvar_VariableString("menu_brightness");
+
+	if (fs[0] && Q_stricmp(fs, Cvar_VariableString("vid_fullscreen")))
+	{
+		Cvar_Set("vid_fullscreen", (char *)fs); /* sets vid_fullscreen->modified: VID_CheckChanges restarts */
+	}
+
+	if (br[0] && Cvar_VariableValue("vid_brightness") != (float)atof(br))
+	{
+		Cvar_Set("vid_brightness", (char *)br);
+		restart = true;
+	}
+
+	Q_strlcpy(mode_before, Cvar_VariableString("r_mode"), sizeof(mode_before));
+	Q_strlcpy(cw_before, Cvar_VariableString("r_customwidth"), sizeof(cw_before));
+	Q_strlcpy(ch_before, Cvar_VariableString("r_customheight"), sizeof(ch_before));
 
 	if (!Q_stricmp(m, "desktop"))
 	{
@@ -312,6 +338,18 @@ VID_Apply_f(void)
 	else if (m[0])
 	{
 		Cvar_Set("r_mode", m);
+	}
+
+	if (strcmp(mode_before, Cvar_VariableString("r_mode")) ||
+		(!strcmp(Cvar_VariableString("r_mode"), "-1") && (strcmp(cw_before, Cvar_VariableString("r_customwidth")) ||
+			strcmp(ch_before, Cvar_VariableString("r_customheight")))))
+	{
+		restart = true;
+	}
+
+	if (restart)
+	{
+		VID_Restart_f();
 	}
 }
 
@@ -593,6 +631,7 @@ VID_CheckChanges(void)
 
 		// Reset the client side of the renderer state.
 		cl.refresh_prepped = false;
+		CL_MenuScene_Forget(); /* RLabs: a new renderer has no menu scene */
 		cl.cinematicpalette_active = false;
 
 		// More or less blocks the client.
@@ -629,6 +668,7 @@ VID_CheckChanges(void)
 	if (rs == RESTART_PARTIAL)
 	{
 		cl.refresh_prepped = false;
+		CL_MenuScene_Forget(); /* RLabs: a new renderer has no menu scene */
 	}
 }
 
@@ -640,7 +680,13 @@ VID_Init(void)
 {
 	// Console variables
 	vid_gamma = Cvar_Get("vid_gamma", "1.0", CVAR_ARCHIVE);
+#ifdef __APPLE__
+	/* RLabs (play-test 2026-11-05: "default for game should be full screen, not windowed"): a new profile starts in
+	   the Mac's full screen at the desktop resolution (2, desktop fullscreen); the window stays one choice away */
+	vid_fullscreen = Cvar_Get("vid_fullscreen", "2", CVAR_ARCHIVE);
+#else
 	vid_fullscreen = Cvar_Get("vid_fullscreen", "0", CVAR_ARCHIVE);
+#endif
 	vid_renderer = Cvar_Get("vid_renderer", "gl3", CVAR_ARCHIVE);
 
 	// Commands

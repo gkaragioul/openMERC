@@ -42,6 +42,10 @@ void setCustomCfgDir(const char* dir);
 int
 main(int argc, char **argv)
 {
+	/* RLabs Mac port: the launcher sends the console to a log file; write it line by line, so the log is
+	   current while the game runs (and complete after a crash) */
+	setvbuf(stdout, NULL, _IOLBF, 0);
+
 	// register signal handler
 	registerHandler();
 

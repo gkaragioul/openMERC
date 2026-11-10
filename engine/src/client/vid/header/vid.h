@@ -64,6 +64,7 @@ void GLimp_Shutdown(void);
 qboolean GLimp_InitGraphics(int fullscreen, int *pwidth, int *pheight);
 void GLimp_ShutdownGraphics(void);
 void GLimp_GrabInput(qboolean grab);
+void GLimp_WindowResized(void);
 float GLimp_GetRefreshRate(void);
 qboolean GLimp_GetDesktopMode(int *pwidth, int *pheight);
 /* OpenMerc MENU2: the distinct fullscreen sizes of the game's display, largest first */

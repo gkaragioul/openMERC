@@ -213,6 +213,68 @@ FS_HashName(const char *s)
 
 /* opens a host file for reading; <resolved> (optional) receives the name that
    was opened, in its real letter case */
+#ifdef __APPLE__
+/* RLabs 2026-11-05: 1 when the volume holding path already matches names without regard to case (APFS/HFS+
+   default). There the scan below cannot find anything fopen missed, and it walked and listed every directory from
+   the root for each missing file: a level's texture probes took 7-25 s on the test Mac (run 0062, sampled in
+   run 0063: MTL_LoadPic -> FS_OpenHostEx -> readdir). pathconf on the nearest existing ancestor, cached. */
+static int
+FS_HostIgnoresCase(const char *path)
+{
+	static char cachedir[4][MAX_OSPATH];
+	static int cached[4], next;
+	char dir[MAX_OSPATH];
+	char *slash;
+	int i;
+
+	Q_strlcpy(dir, path, sizeof(dir));
+
+	while ((slash = strrchr(dir, '/')) != NULL)
+	{
+		long cs;
+
+		*slash = 0;
+
+		if (!dir[0])
+		{
+			Q_strlcpy(dir, "/", sizeof(dir));
+		}
+
+		for (i = 0; i < 4; i++)
+		{
+			if (cachedir[i][0] && !strcmp(cachedir[i], dir))
+			{
+				return cached[i];
+			}
+		}
+
+		cs = pathconf(dir, _PC_CASE_SENSITIVE);
+
+		if (cs >= 0)
+		{
+			Q_strlcpy(cachedir[next], dir, sizeof(cachedir[next]));
+			cached[next] = cs == 0;
+			next = (next + 1) % 4;
+			return cs == 0;
+		}
+
+		if (!strcmp(dir, "/"))
+		{
+			break;
+		}
+	}
+
+	return 0;
+}
+#elif !defined(_WIN32)
+static int
+FS_HostIgnoresCase(const char *path)
+{
+	(void)path;
+	return 0;
+}
+#endif
+
 static FILE *
 FS_OpenHostEx(const char *path, char *resolved, size_t resolvedsize)
 {
@@ -225,7 +287,7 @@ FS_OpenHostEx(const char *path, char *resolved, size_t resolvedsize)
 
 #ifndef _WIN32
 	/* case-insensitive match of loose files on case-sensitive hosts */
-	if (!f)
+	if (!f && !FS_HostIgnoresCase(path))
 	{
 		char built[MAX_OSPATH], part[MAX_OSPATH];
 		const char *s = path;
@@ -2001,7 +2063,14 @@ FS_SwitchToCvar(const char *sw, const char *cvarname)
 }
 
 /* OpenMerc install layout: openMERC's own folder next to openMerc.exe */
+#ifdef __APPLE__
+/* RLabs: macOS disks are case-insensitive, so a folder "openmerc" cannot sit next to the "openMerc" program; the
+   Mac build used <exe dir>/base, which is searched for modules only, and openMERC's data archive (menus, fonts,
+   modern key defaults) was never loaded (2026-11-05). */
+#define OM_DATADIR "openmerc-data"
+#else
 #define OM_DATADIR "openmerc"
+#endif
 static char fs_omdir[MAX_OSPATH];
 
 const char *

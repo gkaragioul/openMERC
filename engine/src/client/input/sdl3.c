@@ -108,6 +108,17 @@ typedef enum
 // IN_Update() called at the beginning of a frame to the
 // actual movement functions called at a later time.
 static float mouse_x, mouse_y;
+
+#ifdef OM_RLK_MOUSE
+/* RLabs kit (the Thief Gold Mac port): mouse reports resampled to frame times. A mouse reports at its own rate (USB 125 Hz,
+   Bluetooth 90-133 Hz with jitter), so at 120 fps some frames got no report and the next two: turning moved in
+   uneven steps (play-test 2026-11-05: "walking and strafing while moving the mouse causes sometimes mouse hickups").
+   `m_resample 0` restores the per-frame sum. */
+#include "rlk_mouse_motion.h"
+static rlk_mouse_motion_t mouse_motion;
+static double mouse_motion_last;   /* when the last frame took movement (seconds), 0: never */
+static cvar_t *m_resample;
+#endif
 static int joystick_left_x, joystick_left_y, joystick_right_x, joystick_right_y;
 static qboolean mlooking;
 
@@ -737,13 +748,33 @@ IN_Update(void)
 			case SDL_EVENT_MOUSE_MOTION :
 				if (cls.key_dest == key_game && (int) cl_paused->value == 0)
 				{
+#ifdef OM_RLK_MOUSE
+					if (m_resample && m_resample->value)
+					{
+						rlk_mouse_motion_add(&mouse_motion, (double)event.motion.timestamp * 1e-9,
+							event.motion.xrel, event.motion.yrel);
+						break;
+					}
+#endif
 					mouse_x += event.motion.xrel;
 					mouse_y += event.motion.yrel;
 				}
 				else if (cls.key_dest == key_menu)
 				{
-					/* OpenMerc (I6m): the menu pointer moves by the raw movement (SPEC-801 7.2) */
-					M_MouseMove((int)event.motion.xrel, (int)event.motion.yrel);
+					/* OpenMerc (I6m): the menu pointer moves by the raw movement (SPEC-801 7.2). RLabs: with the
+					   system pointer free (windowed), the menu pointer is placed where the system pointer is */
+					SDL_Window *mw = SDL_GetWindowFromID(event.motion.windowID);
+					int ww = 0, wh = 0;
+
+					if (mw && !SDL_GetWindowRelativeMouseMode(mw) && SDL_GetWindowSize(mw, &ww, &wh) && ww > 0 && wh > 0)
+					{
+						M_MouseAt(event.motion.x * (float)viddef.width / (float)ww,
+							event.motion.y * (float)viddef.height / (float)wh);
+					}
+					else
+					{
+						M_MouseMove(event.motion.xrel, event.motion.yrel);
+					}
 				}
 				break;
 
@@ -794,6 +825,15 @@ IN_Update(void)
 				Key_ReleaseAll();
 
 				S_Activate(true);
+				break;
+			}
+
+			case SDL_EVENT_WINDOW_RESIZED:
+			case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+			{
+				/* RLabs: the window's real size after a resize the game did not ask for (macOS full screen
+				   on a MacBook with a camera notch is 33 points shorter than the display mode) */
+				GLimp_WindowResized();
 				break;
 			}
 
@@ -1583,12 +1623,45 @@ CL_MouseZoomFactor(void)
 void
 IN_Move(usercmd_t *cmd)
 {
-	static int old_dx, old_dy;
-	int dx, dy, mx, my, rawx, rawy;
+	static float old_dx, old_dy;
+	float dx, dy, mx, my, rawx, rawy;
 	double z;
+	qboolean smooth = false;
 
-	rawx = (int)mouse_x;
-	rawy = (int)mouse_y;
+#ifdef OM_RLK_MOUSE
+	if (m_resample && m_resample->value)
+	{
+		/* the movement up to one report interval ago, spread evenly over frame times; whole and fractional
+		   counts are kept (truncating each frame to whole counts made small movements uneven too) */
+		double now = (double)SDL_GetTicksNS() * 1e-9, sx = 0, sy = 0;
+
+		if (!mouse_motion_last || (now - mouse_motion_last > 0.1))
+		{
+			rlk_mouse_motion_reset(&mouse_motion, now); /* back from a menu, the console or a pause */
+		}
+		else
+		{
+			rlk_mouse_motion_sample(&mouse_motion, now, &sx, &sy);
+		}
+
+		mouse_motion_last = now;
+		mouse_x += (float)sx;
+		mouse_y += (float)sy;
+		smooth = true;
+	}
+#endif
+
+	if (smooth)
+	{
+		rawx = mouse_x;
+		rawy = mouse_y;
+	}
+	else
+	{
+		rawx = (float)(int)mouse_x;
+		rawy = (float)(int)mouse_y;
+	}
+
 	mouse_x -= rawx;
 	mouse_y -= rawy;
 
@@ -1602,8 +1675,14 @@ IN_Move(usercmd_t *cmd)
 
 	if (m_filter->value)
 	{
-		dx = (int)((rawx + old_dx) * 0.5);
-		dy = (int)((rawy + old_dy) * 0.5);
+		dx = (rawx + old_dx) * 0.5f;
+		dy = (rawy + old_dy) * 0.5f;
+
+		if (!smooth)
+		{
+			dx = (float)(int)dx;
+			dy = (float)(int)dy;
+		}
 	}
 
 	old_dx = rawx;
@@ -1612,8 +1691,15 @@ IN_Move(usercmd_t *cmd)
 	if (dx || dy)
 	{
 		z = CL_MouseZoomFactor();
-		mx = (int)(m_sensitivity_x->value * dx * z);
-		my = (int)(m_sensitivity_y->value * dy * z);
+		mx = (float)(m_sensitivity_x->value * dx * z);
+		my = (float)(m_sensitivity_y->value * dy * z);
+
+		if (!smooth)
+		{
+			/* SPEC-312 section 8: whole units, as the original */
+			mx = (float)(int)mx;
+			my = (float)(int)my;
+		}
 
 		if (m_invert_x->value)
 		{
@@ -2690,6 +2776,9 @@ IN_Init(void)
 	in_grab = Cvar_Get("in_grab", "2", CVAR_ARCHIVE);
 	lookstrafe = Cvar_Get("lookstrafe", "0", CVAR_ARCHIVE);
 	m_filter = Cvar_Get("m_filter", "0", CVAR_ARCHIVE);
+#ifdef OM_RLK_MOUSE
+	m_resample = Cvar_Get("m_resample", "1", CVAR_ARCHIVE);
+#endif
 	m_up = Cvar_Get("m_up", "1", CVAR_ARCHIVE);
 	m_forward = Cvar_Get("m_forward", "1", 0);
 	m_pitch = Cvar_Get("m_pitch", "0.022", CVAR_ARCHIVE);

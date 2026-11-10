@@ -23,6 +23,15 @@
 
 #include "header/sof_pmove.h"
 
+/* SPEC-314 section 1 requires a single-precision rounding after each
+   operation throughout movement, including client prediction and the server.
+   Clang otherwise contracts multiply/add/subtract expressions on arm64:
+   W15b's 5 - 800 * t becomes -2.99999976 instead of -3, snapping to -23/8.
+   Keep this source policy shared by the engine and the standalone tests. */
+#if defined(__clang__)
+#pragma STDC FP_CONTRACT OFF
+#endif
+
 #define STEPSIZE 18.0f
 #define MIN_STEP_NORMAL 0.7f
 #define STOP_EPSILON 0.1f

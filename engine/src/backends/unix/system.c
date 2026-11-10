@@ -773,7 +773,11 @@ Sys_LoadLibrary(const char *path, const char *sym, void **handle)
 
 	*handle = NULL;
 
-#ifdef USE_SANITIZER
+#if defined(USE_SANITIZER) || defined(__APPLE__)
+	/* RLabs (macOS): never unload a module. The renderer hands its constant strings and blocks to Metal/AppKit,
+	   which keep them past the module's shutdown (Metal's per-device shader-library cache holds the function
+	   names); dlclose then left them dangling and vid_restart crashed in -[MTLLibrary newFunctionWithName:]
+	   (runs sof-openmerc-macos-0019..0021, 2026-11-05). Reloading returns the same image; Shutdown/Init reset it. */
 	module = dlopen(path, RTLD_LAZY | RTLD_NODELETE);
 #else
 	module = dlopen(path, RTLD_LAZY);
