@@ -38,6 +38,8 @@
 
 #ifdef _WIN32
 #define SV_GAME_LIBRARY "gamex86.dll"
+#elif defined(__APPLE__)
+#define SV_GAME_LIBRARY "gamex86.dylib" /* OpenMerc macOS build: native Mach-O module name */
 #else
 #define SV_GAME_LIBRARY "gamex86.so"
 #endif

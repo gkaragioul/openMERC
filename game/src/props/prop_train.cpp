@@ -137,6 +137,20 @@ static bool StopCheck(edict_t *self)
 static void train_think(edict_t *self)
 {
 	PropData &d = D(self);
+	/* A train stopped by an obstacle keeps its velocity (elasticity -1, SPEC-760 B4.7), so the riders rule went on moving
+	 * a player on the roof at full speed: on tsr1 the ride ends at a metal plate lying across the rails and the player
+	 * slid off the front and dropped to the track (play-test 2026-11-08). A train that did not advance is a stopped train. */
+	if (d.i1 && d.i0 != TS_STOPPED && HorizLen(self->velocity) > 0) {
+		float dx = self->s.origin[0] - d.t0, dy = self->s.origin[1] - d.t1;
+		if (dx * dx + dy * dy < 0.25f) {
+			VectorClear(self->velocity);
+			StopLoop(self);
+			d.i0 = TS_STOPPED;
+		}
+	}
+	d.t0 = self->s.origin[0];
+	d.t1 = self->s.origin[1];
+	d.i1 = 1;
 	Riders(self);
 	self->nextthink = level.time + FRAMETIME;
 	switch (d.i0) {

@@ -121,6 +121,9 @@ static void AdvanceSight(void)
 			break;
 		}
 	}
+	/* RLabs (2026-11-05): the navigation's hidden spawn spot (SPEC-740 rule 10) reads the sight client from the level
+	   record, which nothing set - every world spawn failed with "no spots available" */
+	level.sight_client = mgr.sight_client;
 	int first = maxc + 1, count = globals.num_edicts - first;
 	if (count <= 0) {
 		mgr.sight_character = nullptr;

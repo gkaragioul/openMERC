@@ -127,6 +127,7 @@ typedef struct
 	int numsurfaces;
 	int *surfacedamage;         /* accumulated damage per record */
 	int *surfacestage;          /* damage stage per record */
+	int *surfacerecord;         /* current texture-table record of each surface (0 = none) */
 
 	/* demo server information */
 	fileHandle_t demofile;
@@ -252,6 +253,7 @@ extern cvar_t *sv_noreload;
 extern cvar_t *sv_enforcetime;
 extern cvar_t *sv_reconnect_limit;
 extern cvar_t *sv_max_ghoul_mp;
+extern cvar_t *sv_showdamage;
 extern cvar_t *sv_ghoul_stub;
 extern cvar_t *sv_hostdebug;
 extern cvar_t *hostname;

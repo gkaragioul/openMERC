@@ -271,6 +271,13 @@ void CombatDecision::ActionDone(edict_t *ent, AI *ai, Action *a, float m)
 {
 	if (a->Kind() != AK_ATTACK)
 		success = 0.75f * success + 0.25f * m;
+	if (last_plan_move) {
+		if (m <= 0.25f) {
+			move_fails++;
+			move_fail_time = Now();
+		} else
+			move_fails = 0;
+	}
 	if (m <= 0.25f)
 		Unstick(ent, ai);
 	else if (pending_set && !PendingExecutable(ent))
@@ -392,6 +399,9 @@ bool CombatDecision::CrouchAllowed(AI *ai) { return !(PFlags(ai) & 16) && (S > C
 
 static const char *CrouchedAimName(AI *ai);
 
+/* a record that makes an attack action when queued with a target (SPEC-710 D3): an attack record, or an aim-flagged one */
+static bool FiringRecord(const G3Anim *rec) { return rec && (rec->cls == ANIMCLS_ATTACK || (rec->flags & ANIMF_AIM)); }
+
 void CombatDecision::PlanStand(edict_t *ent, AI *ai, const vec3_t face, edict_t *t, bool crouch, const char *seq)
 {
 	G3MoveInput in;
@@ -408,6 +418,7 @@ void CombatDecision::PlanStand(edict_t *ent, AI *ai, const vec3_t face, edict_t 
 	else
 		S = Now();
 	const G3Anim *rec = ai->body ? ai->body->ChooseStand(in) : nullptr;
+	if (CvarValue(cv.ai_trace) >= 2) Dbg("ai %d: branch stand: crouch %d seq %s record %s\n", G_EdictNum(ent), crouch ? 1 : 0, seq ? seq : "-", rec ? rec->name : "none");
 	QueueRecord(ent, ai, this, rec, ent->s.origin, face, t);
 }
 
@@ -476,6 +487,9 @@ void CombatDecision::PlanAttack(edict_t *ent, AI *ai, edict_t *t, const vec3_t a
 		VectorNormalize(fw);
 		VectorNormalize(to);
 		bool facing = DotProduct(fw, to) >= 0.717f || ai->body->RightHandType() == 18;
+		if (CvarValue(cv.ai_trace) >= 2 && (!facing || !ai->body->ReadyToFire()))
+			Dbg("ai %d: aims instead of firing: facing %d (dot %.2f) ready %d\n", G_EdictNum(ent), facing ? 1 : 0, DotProduct(fw, to),
+			    ai->body->ReadyToFire() ? 1 : 0);
 		if (!facing || !ai->body->ReadyToFire()) {
 			/* aim in the posture last chosen (crouched aiming between crouched shots; the original stays crouched
 			 * from its first crouched shot on) */
@@ -495,6 +509,7 @@ void CombatDecision::PlanAttack(edict_t *ent, AI *ai, edict_t *t, const vec3_t a
 	else
 		S = Now();
 	const G3Anim *rec = ai->body ? ai->body->ChooseAttack(in) : nullptr;
+	if (CvarValue(cv.ai_trace) >= 2) Dbg("ai %d: branch attack: crouch %d record %s\n", G_EdictNum(ent), crouch ? 1 : 0, rec ? rec->name : "none");
 	QueueRecord(ent, ai, this, rec, moveto ? moveto : ent->s.origin, face, t);
 	ai->fire_flags &= ~1;
 }
@@ -506,6 +521,20 @@ void CombatDecision::PlanMove(edict_t *ent, AI *ai, const vec3_t dest, const vec
 	FillInput(in, ent, ai, dest, face, aiming ? target : nullptr, -1, running, aiming, strafing, nullptr);
 	S = Now();
 	const G3Anim *rec = ai->body ? ai->body->ChooseMove(in) : nullptr;
+	/* a crouched owner whose body has no crouched move record for its weapon gets a crouched aim stance from the move
+	 * choice (SPEC-722 crouched list) and never takes a step: irq1a's market sniper, backing away from the player, stayed
+	 * in `cch_a_fwd_r_2` for good (enemy audit 0282), and kos3's shotgunner, just out of range, knelt aiming without a shot
+	 * (run 0290). It stands up to move (DEVIATIONS.md). Riders do not get here (RidingMovingProp): the tsr1 train
+	 * skinheads, kneeling to shoot across the gap, stood up and ran against the train's edge before that rule (run 0285) */
+	if (rec && rec->cls != ANIMCLS_MOVE && ai->body->cur && ai->body->cur->posture == POSTURE_CROUCH &&
+	    !(ent->spawnflags & SF_STATIONARY) && HDist2(dest, ent->s.origin) >= 1.0f) {
+		FillInput(in, ent, ai, dest, face, aiming ? target : nullptr, POSTURE_STAND, running, aiming, strafing, nullptr);
+		const G3Anim *up = ai->body->ChooseMove(in);
+		if (CvarValue(cv.ai_trace) >= 2)
+			Dbg("ai %d: crouched move %s, stands up: %s\n", G_EdictNum(ent), rec->name, up ? up->name : "none");
+		if (up)
+			rec = up;
+	}
 	QueueRecord(ent, ai, this, rec, dest, face, aiming ? target : nullptr);
 }
 
@@ -572,6 +601,11 @@ bool CombatDecision::Steer(edict_t *ent, AI *ai, vec3_t goal)
 		vec3_t end;
 		VectorMA(ent->s.origin, 60, dir, end);
 		trace_t tr = Trace(ent->s.origin, ent->mins, maxs, end, ent, 0x2020003);
+		/* the raised top starts in a low ceiling (the owner fits, the probe does not): every direction read 0 and
+		 * irq3b's flamethrower brute stood under its ceiling for good, 205 units from the player (enemy audit 0283);
+		 * probe with the owner's own box then (DEVIATIONS.md) */
+		if (tr.startsolid && !(tr.ent && tr.ent->ai))
+			tr = Trace(ent->s.origin, ent->mins, ent->maxs, end, ent, 0x2020003);
 		if (tr.ent && DoorUsableNow(tr.ent))
 			return 1.0f;
 		if (tr.startsolid)
@@ -596,12 +630,46 @@ bool CombatDecision::Steer(edict_t *ent, AI *ai, vec3_t goal)
 			found = true;
 		}
 	}
-	if (!found)
+	if (!found) {
+		if (CvarValue(cv.ai_trace) >= 2) {
+			vec3_t end;
+			VectorMA(ent->s.origin, 60, d, end);
+			trace_t tr = Trace(ent->s.origin, ent->mins, ent->maxs, end, ent, 0x2020003);
+			Dbg("ai %d: steer: ahead %.2f own box start %d hit %s, no side way\n", G_EdictNum(ent), c0, tr.startsolid ? 1 : 0,
+			    tr.ent && tr.ent->classname ? tr.ent->classname : "-");
+		}
 		return c0 > 0.2f;
+	}
 	VectorMA(ent->s.origin, len, bestdir, goal);
 	VectorCopy(bestdir, steer_dir);
 	steer_time = Now();
 	return true;
+}
+
+/* standing on a prop that carries it (prop riders rule, DEVIATIONS.md "Moving trains carry characters"): a train, moving or
+ * stopped (a train is not in the navigation data, so every path from its top starts with a drop the ledge test refuses: the
+ * tsr1 skinheads ran on the spot on their stopped train for good, run 0288), or any other prop while it moves */
+static bool RidingMovingProp(edict_t *ent)
+{
+	edict_t *g = ent->groundentity;
+	if (!g || g == g_edicts || g->ai)
+		return false;
+	return (g->classname && !Q_stricmp(g->classname, "misc_generic_train")) || DotProduct(g->velocity, g->velocity) > 1.0f;
+}
+
+/* the body has the back-pedal record its move choice uses for the weapon in hand (SPEC-722: `_mrs_2` for machine guns,
+ * rifles and shotguns, `_p_2` for pistols and machine pistols, `_l_2` for the rocket launcher); C5 asks for any of the three,
+ * and a pistol officer whose body only had the rifle one got a forward run instead */
+static bool CanBackpedal(AI *ai)
+{
+	if (!ai->body)
+		return false;
+	switch (ai->body->RightHandType()) {
+	case 6: case 7: case 9: case 11: case 12: case 16: case 17: case 18: case 29: return BodyHasSeq(ai, "std_rbackaim_n_mrs_2");
+	case 3: case 4: case 5: return BodyHasSeq(ai, "std_rbackaim_n_p_2");
+	case 14: return BodyHasSeq(ai, "std_rbackaim_n_l_2");
+	}
+	return false;
 }
 
 /* C5 */
@@ -636,9 +704,21 @@ void CombatDecision::NonIdealPlan(edict_t *ent, AI *ai, int code)
 	VectorSubtract(target_pos, ent->s.origin, to_t);
 	to_t[2] = 0;
 	float dist_t = VectorNormalize(to_t);
+	/* riding a train or moving prop (trains carry characters, DEVIATIONS.md), moving on foot means stepping off it: the ledge test
+	 * refused every step and the tsr1 train skinheads ran against the train's edge, closing in as the trains drew apart and
+	 * backing off when the player was too close (runs 0284-0288). A rider holds its place as with no path or no retreat
+	 * point (attacks with a clear shot, else stands) */
+	bool riding = RidingMovingProp(ent) && code != 4;
+	/* a C5 move whose steps keep failing (a wall or ledge in the way) is given up for 3 s: an irq3b bodyguard back-pedalled
+	 * against a ledge think after think and never fired (enemy audit 0294), irq1b's leanoutguy5 walked on the spot into a
+	 * wall closing in (0295). Then C5's "no retreat point" / "no path" applies: attack in place with a clear shot, else stand
+	 * (DEVIATIONS.md) */
+	if (move_fails && Now() - move_fail_time >= 3.0f)
+		move_fails = 0;
+	bool stuck = move_fails >= 3 && code != 4;
 	if (code == 2 || code == 8) {
-		vec3_t P;
-		bool retreat = NavPoint(ent, ai, target_pos, NAV_FLEE, P);
+		vec3_t P = {0, 0, 0};
+		bool retreat = !riding && !stuck && NavPoint(ent, ai, target_pos, NAV_FLEE, P);
 		vec3_t r = {0, 0, 0};
 		if (retreat) {
 			VectorSubtract(P, ent->s.origin, r);
@@ -678,17 +758,35 @@ void CombatDecision::NonIdealPlan(edict_t *ent, AI *ai, int code)
 			if (!(code == 8 || (PFlags(ai) & 8) || ClearShotTo(ent, ai, test, target, target_pos)))
 				retreat = false;
 		}
+		if (CvarValue(cv.ai_trace) >= 2) Dbg("ai %d: branch too close: retreat %d, may %d\n", G_EdictNum(ent), retreat ? 1 : 0, may_attack ? 1 : 0);
 		if (retreat) {
 			float stepd = 40;
 			float dt = DotProduct(r, to_t);
+			bool fire_back = may_attack && !(PFlags(ai) & 8) && ClearShotTo(ent, ai, nullptr, target, target_pos);
 			vec3_t face;
 			bool strafe = false;
-			if (dt < -0.717f) {
+			bool can_backpedal = CanBackpedal(ai);
+			/* back-pedalling from -0.75, the body's own limit (SPEC-722 move choice: back-pedal records below -0.75, a forward
+			 * run above): with C5's -0.717 a retreat direction between the two faced the target and got a forward run, towards
+			 * him; irq1b's sniper t359 ran 18 units in and back-pedalled 18 out, think after think (enemy audit 0292). Between
+			 * the two it now runs along its retreat or strafes (DEVIATIONS.md) */
+			if (dt < -0.75f && can_backpedal) {
 				VectorCopy(target->s.origin, face);
-				if (!BodyHasSeq(ai, "std_rbackaim_n_mrs_2") && !BodyHasSeq(ai, "std_rbackaim_n_p_2") &&
-				    !BodyHasSeq(ai, "std_rbackaim_n_l_2"))
-					stepd = 4;
-			} else if (dt > 0.717f) {
+			} else if (dt < -0.75f && fire_back) {
+				/* no back-pedal record for the weapon in hand: the move choice answers with a forward run, towards the target
+				 * (C5's 4-unit step does not hold the animation's own movement back); kos3's pistol officer ran into a wall
+				 * in front of the player think after think (enemy audit 0294). It attacks from where it is (DEVIATIONS.md) */
+				PlanAttack(ent, ai, target, target_pos, false, nullptr);
+				return;
+			} else if (dt > 0.717f || dt < -0.75f) {
+				/* (the second half: backing off without firing and without a back-pedal record, the run choice is a
+				 * forward run, so it turns its back to the target and runs, as below) */
+				VectorMA(ent->s.origin, 2440, r, face);
+			} else if (!fire_back) {
+				/* backing off without firing: the body strafes only while aiming (SPEC-722 move choice), so facing the
+				 * target it ran forward, towards him, and back-pedalled away on the next think; irq3b's sniper bodyguard
+				 * (profile flag 8) danced 20 units to and fro for good without a shot (enemy audit 0282). It runs along
+				 * its retreat (DEVIATIONS.md) */
 				VectorMA(ent->s.origin, 2440, r, face);
 			} else {
 				VectorCopy(target->s.origin, face);
@@ -699,11 +797,19 @@ void CombatDecision::NonIdealPlan(edict_t *ent, AI *ai, int code)
 			}
 			vec3_t goal;
 			VectorMA(ent->s.origin, stepd, r, goal);
-			if (may_attack && !(PFlags(ai) & 8) && ClearShotTo(ent, ai, nullptr, target, target_pos)) {
+			last_plan_move = true;
+			if (fire_back) {
 				G3MoveInput in;
 				FillInput(in, ent, ai, goal, face, target, -1, true, true, strafe, nullptr);
 				S = now;
 				const G3Anim *rec = ai->body ? ai->body->ChooseAttack(in) : nullptr;
+				/* backing off while firing needs a moving or firing record; a body with neither for this posture and weapon
+				 * answered with an aim stance, so a sniper the player came close to aimed for ever without a shot or a step
+				 * (kos2, irq1a, irq3b: enemy audit run 0281). It fires from where it is (DEVIATIONS.md) */
+				if (!(rec && rec->cls == ANIMCLS_MOVE) && !FiringRecord(rec)) {
+					PlanAttack(ent, ai, target, target_pos, false, nullptr);
+					return;
+				}
 				QueueRecord(ent, ai, this, rec, goal, face, target);
 			} else
 				PlanMove(ent, ai, goal, face, true, false, strafe);
@@ -724,7 +830,10 @@ void CombatDecision::NonIdealPlan(edict_t *ent, AI *ai, int code)
 	}
 	/* too far, out of time, no clear shot, flee (4), search (7) */
 	vec3_t pathpt;
-	if (!NavPoint(ent, ai, target_pos, NAV_APPROACH, pathpt)) {
+	if (riding || stuck || !NavPoint(ent, ai, target_pos, NAV_APPROACH, pathpt)) {
+		if (CvarValue(cv.ai_trace) >= 2)
+			Dbg("ai %d: branch approach: %s, may %d\n", G_EdictNum(ent),
+			    riding ? "riding a train or moving prop" : stuck ? "moves keep failing" : "no nav point", may_attack ? 1 : 0);
 		if (may_attack && ClearShotTo(ent, ai, nullptr, target, target_pos))
 			PlanAttack(ent, ai, target, target_pos, false, nullptr);
 		else
@@ -755,11 +864,18 @@ void CombatDecision::NonIdealPlan(edict_t *ent, AI *ai, int code)
 	} else
 		VectorMA(ent->s.origin, 500, dir, face);
 	bool far_enough = dist_t > 50 || code == 4;
+	if (CvarValue(cv.ai_trace) >= 2)
+		Dbg("ai %d: branch approach: point (%.0f %.0f %.0f) step %.1f far %d pflags %d may %d\n", G_EdictNum(ent), pathpt[0],
+		    pathpt[1], pathpt[2], stepd, far_enough ? 1 : 0, PFlags(ai), may_attack ? 1 : 0);
 	if (stepd * stepd >= 2 && far_enough && !((PFlags(ai) & 2) && code != 4)) {
-		if (Steer(ent, ai, goal))
+		if (Steer(ent, ai, goal)) {
+			last_plan_move = code != 4;
 			PlanMove(ent, ai, goal, face, true, may_attack && !(PFlags(ai) & 128) && code != 4 && code != 7, strafe);
-		else
+		}
+		else {
+			if (CvarValue(cv.ai_trace) >= 2) Dbg("ai %d: branch approach: steering found no way\n", G_EdictNum(ent));
 			PlanStand(ent, ai, face, nullptr, false, nullptr);
+		}
 		return;
 	}
 	if (code == 4) {
@@ -892,6 +1008,9 @@ void CombatDecision::Sidestep(edict_t *ent, AI *ai, const vec3_t v_in)
 void CombatDecision::Unstick(edict_t *ent, AI *ai)
 {
 	if (!ent->groundentity && !(ent->flags & FL_FLY))
+		return;
+	/* a rider's failed step was the train's edge: no sidestep off the train (see RidingMovingProp) */
+	if (RidingMovingProp(ent))
 		return;
 	vec3_t f, start, end;
 	AngleVectors(ent->s.angles, f, nullptr, nullptr);
@@ -1039,6 +1158,7 @@ void CombatDecision::CombatPlan(edict_t *ent, AI *ai)
 		    "p0 %.0f p1 %.0f rht %d\n", G_EdictNum(ent), kind, G_EdictNum(target), code, ReactionAge(ai),
 		    ai->profile[4] * ReactionK(ent), sqrtf(Dist2(ent->s.origin, target_pos)), Now() - target_time,
 		    ai->profile[0], ai->profile[1], ai->body ? ai->body->RightHandType() : -1);
+	last_plan_move = false;
 	if (code == 0) {
 		IdealPlan(ent, ai);
 		return;

@@ -561,6 +561,45 @@ void G_UseKey(edict_t *player)
 	vec3_t end;
 	VectorMA(eye, 75, fwd, end);
 	trace_t tr = gi.trace(eye, NULL, NULL, end, player, MASK_PLAYERSOLID);
-	if (tr.ent && tr.ent->inuse && tr.ent->plUse)
+	if (tr.ent && tr.ent->inuse && tr.ent->plUse) {
 		tr.ent->plUse(tr.ent, player, player);
+		return;
+	}
+
+	// 4 (RLabs standard controls, play-test 2026-11-05): Use also picks up the item the player looks at within reach,
+	// as in modern games; walking over items still picks them up as in the original. The item's own touch rules
+	// decide (ownership, full ammo, encumbrance), exactly as if the player had walked onto it.
+	if (!player->client || player->health <= 0)
+		return;
+	for (int i = 0; i < 3; i++) {
+		mins[i] = player->s.origin[i] - 128;
+		maxs[i] = player->s.origin[i] + 128;
+	}
+	n = gi.BoxEdicts(mins, maxs, list, 1024, 2);
+	edict_t *item = NULL;
+	float itemdot = 0.85f; // within about 30 degrees of the view
+	for (int i = 0; i < n; i++) {
+		edict_t *e = list[i];
+		if (!e->inuse || !e->item || !e->touch || e->solid != SOLID_TRIGGER)
+			continue;
+		vec3_t c, d;
+		for (int j = 0; j < 3; j++)
+			c[j] = (e->absmin[j] + e->absmax[j]) * 0.5f;
+		VectorSubtract(c, eye, d);
+		float dist = VectorNormalize(d);
+		if (dist > 128)
+			continue;
+		float dot = DotProduct(d, fwd);
+		if (dist < 40) // right at the player's feet: any direction
+			dot = 1.0f;
+		if (dot < itemdot)
+			continue;
+		trace_t vis = gi.trace(eye, NULL, NULL, c, player, MASK_SOLID);
+		if (vis.fraction < 1.0f && vis.ent != e)
+			continue;
+		item = e;
+		itemdot = dot;
+	}
+	if (item)
+		item->touch(item, player, NULL, NULL);
 }

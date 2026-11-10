@@ -146,7 +146,10 @@ public:
 	virtual bool AddItems(int itemtype, int count, int max) = 0;               // 19
 	virtual int AddArmor(int delta) = 0;                                       // 20
 	virtual bool HasItem(int itemtype) = 0;                                    // 21
-	virtual bool OwnsWeapon(int weapon) = 0;                                   // 22
+	/* RLabs fix 2026-11-05: int, as the module returns it - the weapon's flag bit itself (SPEC-AMEND-006 I7.13,
+	   e.g. 0x100 for the shotgun). Declared bool, callers tested only part of the register: a gun the player
+	   already had read as "not owned" at pickup, so its ammo was never added ("shotgun ammo does not replenish") */
+	virtual int OwnsWeapon(int weapon) = 0;                                    // 22
 	virtual int CurrentWeapon() = 0;                                           // 23
 	virtual int BestWeapon() = 0;                                              // 24
 	virtual int SelectedItemType() = 0;                                        // 25
@@ -208,10 +211,18 @@ protected:
 	~PlayerInventory() {}
 };
 
-// Members of player.dll objects the game reads (SPEC-782 Interface 1)
+// Members of player.dll objects the game reads (SPEC-782 Interface 1). The values are the 32-bit SoF layout; a
+// 64-bit build (arm64 macOS, x86-64) has 8-byte vtable and data pointers, which moves every member after them.
+// player/src/pm_local.h checks both sets against the player module's real layout at compile time.
+#if UINTPTR_MAX == 0xFFFFFFFFu
 #define INV_CURWEAPON_OFS 0x2C
 #define INV_VIEWINST_OFS 0x14C
 #define INV_SPREAD_OFS 0x270
+#else
+#define INV_CURWEAPON_OFS 0x38
+#define INV_VIEWINST_OFS 0x158
+#define INV_SPREAD_OFS 0x288
+#endif
 
 // Weapon description: 32 virtual slots; the game calls 28 (0x70) and 29 (0x74)
 class WeaponDesc {
@@ -230,12 +241,21 @@ public:
 protected:
 	~WeaponDesc() {}
 };
+#if UINTPTR_MAX == 0xFFFFFFFFu
 #define WDESC_SPREAD_PRI 0x1C
 #define WDESC_SPREAD_ALT 0x20
 #define WDESC_MAXSPREAD_PRI 0x24
 #define WDESC_MAXSPREAD_ALT 0x28
 #define WDESC_ATTACK_PRI 0xB8
 #define WDESC_ATTACK_ALT 0xBC
+#else /* 64-bit: the 8-byte vtable pointer moves the data 4 bytes on */
+#define WDESC_SPREAD_PRI 0x20
+#define WDESC_SPREAD_ALT 0x24
+#define WDESC_MAXSPREAD_PRI 0x28
+#define WDESC_MAXSPREAD_ALT 0x2C
+#define WDESC_ATTACK_PRI 0xBC
+#define WDESC_ATTACK_ALT 0xC0
+#endif
 
 #if defined(_M_IX86) || defined(__i386__) /* the SoF 32-bit x86 ABI (MSVC or GCC/Clang i386) */
 static_assert(sizeof(PlayerCommonImport) == 76, "SPEC-003 common import is 76 bytes");

@@ -1062,11 +1062,25 @@ public:
 		*haveBlood = false;
 		IGhoulInst *inst = Inst();
 		if (dmg_shot.ent != ent || dmg_shot.count == 0) {
+			if (G3_Cvar("g3_debug") >= 2) // RLabs diagnostic
+				G3_Printf("  G3 no model hit (shot ent %d, count %d, deadflag %d, frozen %.1f)\n",
+					dmg_shot.ent ? G_EdictNum(dmg_shot.ent) : -1, dmg_shot.count, ent->deadflag, frozenAt);
 			*done = true;
 			return 0;
 		}
 		int n = dmg_shot.count;
 		bool knifeDM = thrownKnife && G3_Deathmatch();
+		if (G3_Cvar("g3_debug") >= 2) { // RLabs diagnostic: every model record of this shot
+			for (int i = 0; i < n && i < 12; i++) {
+				const HitRecord &r = dmg_shot.rec[i];
+				char nm[64] = "?";
+				IGhoulObject *o = r.inst ? r.inst->GetGhoulObject() : NULL;
+				if (o && r.part)
+					o->GetPartName(r.part, nm);
+				G3_Printf("  G3 rec %d: %s part %s zone %d dist %.1f\n", i, r.inst == inst ? "body" : "other", nm,
+					r.inst == inst && r.part ? RecordZone(r, knifeDM) : -9, r.distance);
+			}
+		}
 		// players: a hit whose only record is on `_mohawk` does nothing (10.2)
 		if (ent->client && n == 1 && dmg_shot.rec[0].inst == inst) {
 			GhoulID mohawk = G3G_Part(inst, "_mohawk");

@@ -183,7 +183,10 @@ public:
 		if (roll_time > 0 && now - roll_time < 4.0f)
 			roll = true;
 		else {
-			float light = t->client ? (float)t->client->lightlevel : 0.0f;
+			/* the light level the client reports with each move is kept on the player's entity (p_client.cpp, SPEC-701
+			 * inputs); the client record's field of that name is never written, so every roll saw darkness and an
+			 * unalerted guard could never spot a leaning player's head (DEVIATIONS.md has no row: this is the spec) */
+			float light = t->client ? (float)t->light_level : 0.0f;
 			float B;
 			if (d2 < 192.0f)
 				B = 2.5f;

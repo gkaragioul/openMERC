@@ -52,8 +52,12 @@ void MoveClientToIntermission(edict_t *ent)
 		DeathmatchScoreboardMessage(ent, NULL);
 }
 
+bool OmAudit_Active(void);
+
 void BeginIntermission(edict_t *targ)
 {
+	if (OmAudit_Active()) /* RLabs test aid: a level must not end while its enemies are being checked */
+		return;
 	if (level.intermissiontime)
 		return;
 

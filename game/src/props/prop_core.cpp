@@ -876,16 +876,30 @@ void FallOverStart(edict_t *self, edict_t *player)
 
 void Riders(edict_t *self)
 {
-	for (int i = 1; i <= game.maxclients; i++) {
+	/* SPEC-770 5.9 carries players only. Characters are carried too: tsr1 kneels three skinheads on a train that runs
+	 * beside the player's to shoot across the gap (`etrainset`), and without this they stayed behind and fell to the
+	 * track as the train left from under them, so the fight happened on the ground (play-test 2026-11-08). */
+	for (int i = 1; i < globals.num_edicts; i++) {
 		edict_t *p = g_edicts + i;
-		if (!p->inuse || !p->client || p->groundentity != self)
+		if (!p->inuse || (!p->client && !p->ai))
+			continue;
+		/* a character's ground check does not see a prop's box as ground, so a character counts as riding while its box
+		 * bottom rests on the prop's top and its centre is over the prop (Sabre standing on the leaving train hung in
+		 * the air as the train slid out from under him) */
+		bool riding = p->groundentity == self;
+		if (!riding && !p->client && p->velocity[2] <= 0 && p->health > 0) {
+			float bottom = p->s.origin[2] + p->mins[2], top = self->s.origin[2] + self->maxs[2];
+			riding = fabsf(bottom - top) <= 2.0f && p->s.origin[0] >= self->absmin[0] && p->s.origin[0] <= self->absmax[0] &&
+			         p->s.origin[1] >= self->absmin[1] && p->s.origin[1] <= self->absmax[1];
+		}
+		if (!riding)
 			continue;
 		if (p->movetype == MOVETYPE_NONE || p->movetype == MOVETYPE_NOCLIP || p->movetype == MOVETYPE_PUSH ||
 		    p->movetype == MOVETYPE_STOP)
 			continue;
 		vec3_t np;
 		VectorMA(p->s.origin, FRAMETIME, self->velocity, np);
-		trace_t tr = gi.trace(np, p->mins, p->maxs, np, p, 0x02010003);
+		trace_t tr = gi.trace(np, p->mins, p->maxs, np, p, p->client ? 0x02010003 : 0x02020003);
 		if (tr.startsolid || tr.allsolid)
 			continue;
 		VectorCopy(np, p->s.origin);

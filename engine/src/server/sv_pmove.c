@@ -94,11 +94,13 @@ SVPM_Trace(void *ctx, sofpm_trace_t *out, const float *start, const float *mins,
 	}
 	else if (c->gametrace && c->block->trace)
 	{
-#if defined(__i386__) && !defined(_MSC_VER)
-		tr = c->block->trace(start, mins, maxs, end); /* see sof_pmove_t.trace */
-#else
-		c->block->trace(&tr, start, mins, maxs, end);
-#endif
+		/* The game's PM_trace returns trace_t by value with 4 params.
+		   On ARM64, cast to the correct function pointer type to handle
+		   the calling convention properly. */
+		typedef trace_t (*pm_trace_fn_t)(const float *, const float *, const float *, const float *);
+		pm_trace_fn_t fn = (pm_trace_fn_t)c->block->trace;
+		trace_t gtr = fn(start, mins, maxs, end);
+		memcpy(&tr, &gtr, sizeof(tr));
 	}
 	else
 	{

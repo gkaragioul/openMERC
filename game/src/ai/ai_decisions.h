@@ -42,6 +42,10 @@ public:
 	int range_code = 0;
 	int blocker = -1;
 	float S = -1000.0f, C = -1000.0f;
+	/* RLabs (not saved): C5 moves (backing off, closing in) that failed in a row, so a move that gets nowhere is given up for a while */
+	bool last_plan_move = false;
+	int move_fails = 0;
+	float move_fail_time = -100;
 	/* search tail (kind 4) */
 	float heard_time = -100;
 	vec3_t heard_pos = {0, 0, 0};

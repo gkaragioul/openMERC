@@ -303,13 +303,48 @@ enum {
 	CL_HELPER = 852,    // second per-client object presence (OpenMerc has none)
 };
 
+// The record keeps the player state in the original 32-bit layout (200 bytes, SPEC-780 1). A 64-bit build's
+// player_state_t is 216 bytes and moves every field from the first pointer on (weaponinst 0x6C -> 0x70), so a
+// plain 200-byte copy dropped the last stats and the cinematic freeze flag, and clearing the 32-bit pointer
+// slots at 0x6C/0x7C hit the clip/reserve counters. Convert field groups explicitly; identical on 32-bit.
+static const int PS_IMG_SIZE = 200;
+static const int PS_IMG_WEAPONINST = 0x6C, PS_IMG_WEAPONINSTID = 0x70, PS_IMG_BODYINST = 0x7C, PS_IMG_REMOTEMODEL = 0x80;
+
+void PS_ToImage(const player_state_t *ps, unsigned char *img)
+{
+	const unsigned char *p = (const unsigned char *)ps;
+	memset(img, 0, PS_IMG_SIZE);
+	memcpy(img, p, offsetof(player_state_t, weaponinst));                       // up to remote_type
+	// img + 0x6C: view-weapon instance, cleared (SPEC-752 3.2 "108 cleared")
+	memcpy(img + PS_IMG_WEAPONINSTID, p + offsetof(player_state_t, weaponinstid),
+	       offsetof(player_state_t, pad7b) + 1 - offsetof(player_state_t, weaponinstid)); // id .. pad7b
+	// img + 0x7C: the game's own body instance pointer, cleared
+	memcpy(img + PS_IMG_REMOTEMODEL, p + offsetof(player_state_t, remotemodel),
+	       sizeof(player_state_t) - offsetof(player_state_t, remotemodel) < (size_t)(PS_IMG_SIZE - PS_IMG_REMOTEMODEL) ?
+	           sizeof(player_state_t) - offsetof(player_state_t, remotemodel) : (size_t)(PS_IMG_SIZE - PS_IMG_REMOTEMODEL));
+	(void)PS_IMG_WEAPONINST;
+	(void)PS_IMG_BODYINST;
+}
+
+void PS_FromImage(const unsigned char *img, player_state_t *ps)
+{
+	unsigned char *p = (unsigned char *)ps;
+	memset(ps, 0, sizeof(*ps));
+	memcpy(p, img, offsetof(player_state_t, weaponinst));
+	memcpy(p + offsetof(player_state_t, weaponinstid), img + PS_IMG_WEAPONINSTID,
+	       offsetof(player_state_t, pad7b) + 1 - offsetof(player_state_t, weaponinstid));
+	memcpy(p + offsetof(player_state_t, remotemodel), img + PS_IMG_REMOTEMODEL,
+	       sizeof(player_state_t) - offsetof(player_state_t, remotemodel) < (size_t)(PS_IMG_SIZE - PS_IMG_REMOTEMODEL) ?
+	           sizeof(player_state_t) - offsetof(player_state_t, remotemodel) : (size_t)(PS_IMG_SIZE - PS_IMG_REMOTEMODEL));
+	ps->weaponinst = NULL;
+	ps->bodyinst = NULL;
+}
+
 void WriteClientGame(gclient_t *c)
 {
 	unsigned char img[ORIG_CLNT];
 	memset(img, 0, sizeof(img));
-	memcpy(img + CL_PS, &c->ps, 200);
-	memset(img + CL_PS + 0x6C, 0, 4); // view-weapon instance: cleared (SPEC-752 3.2 "108 cleared")
-	memset(img + CL_PS + 0x7C, 0, 4); // the game's own body instance pointer
+	PS_ToImage(&c->ps, img + CL_PS); // 32-bit layout, pointers cleared (SPEC-752 3.2)
 	PutI(img, CL_PING, c->ping);
 	memcpy(img + CL_USERINFO, c->pers.userinfo, 512);
 	memcpy(img + CL_NAME, c->pers.netname, 16);
@@ -337,9 +372,7 @@ void ReadClientGame(gclient_t *c)
 		c->inv = NULL;
 	}
 	memset(c, 0, sizeof(*c));
-	memcpy(&c->ps, img + CL_PS, 200);
-	memset((unsigned char *)&c->ps + 0x6C, 0, sizeof(void *));
-	memset((unsigned char *)&c->ps + 0x7C, 0, sizeof(void *));
+	PS_FromImage(img + CL_PS, &c->ps);
 	c->ping = GetI(img, CL_PING);
 	memcpy(c->pers.userinfo, img + CL_USERINFO, 512);
 	c->pers.userinfo[511] = 0;

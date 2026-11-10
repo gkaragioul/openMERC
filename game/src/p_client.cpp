@@ -27,6 +27,8 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 
 #include "g_local.h"
+#include <math.h>
+#include "../../engine/src/common/header/sof_pmove.h"
 #include "damage/damage_api.h" /* G3: player bodies, corpses */
 #include "effects/ambient.h" /* G7: music value rules */
 #include "modes/g_modes.h" /* G9 */
@@ -1080,7 +1082,15 @@ static edict_t *pm_passent;
 
 static trace_t PM_trace(const float *start, const float *mins, const float *maxs, const float *end)
 {
-	if (pm_passent->health > 0)
+	if (!start || !end)
+	{
+		trace_t tr;
+		memset(&tr, 0, sizeof(tr));
+		tr.fraction = 1.0f;
+		return tr;
+	}
+
+	if (pm_passent && pm_passent->health > 0)
 		return gi.trace(start, mins, maxs, end, pm_passent, MASK_PLAYERSOLID);
 	return gi.trace(start, mins, maxs, end, pm_passent, 0x00010003);
 }

@@ -374,6 +374,7 @@ bool rg_HumanTypeSetup(edict_t *ent, om_ai::AI *ai, const RgHumanType *ht, const
 			ai->SetBBoxPreset(0, mn, mx);
 		}
 		ai->scale = ch->sizescale;
+		om_ai::ScaledFeetOnFloor(ent, ch->sizescale);
 	}
 	// 2./3. registration list on the model object, then an instance of it
 	int fam = ht->family == RG_FAM_MESO_ARMOURED ? RG_FAM_MESO : ht->family;

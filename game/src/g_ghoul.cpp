@@ -238,7 +238,14 @@ int GhoulRayHit(edict_t *ent, const vec3_t start, const vec3_t dir, float maxdis
 	if (!ent->ghoulInst)
 		return 0;
 	vec3_t f, l, u, d, ls, ld;
-	EntityAxes(ent->s.angles, f, l, u);
+	/* RLabs (2026-11-05, play-tester: "why with some dead enemies show holes/react when shooting while others dont?"): a
+	   Ghoul entity's model frame uses negated pitch and roll (SPEC-011 row-vector entity matrix; the renderers and
+	   G3_EntityAxes do so). The player's bullet filter used the plain angles, so on any tilted body - a character
+	   killed while leaning gets the lean's pitch, a severed limb lies at up to 90 degrees - it tested a body tilted
+	   the other way: bullets went through where the body is drawn and the hit never reached the damage code
+	   (run 0176: same ray, filter distance 98.6 vs damage ray 110.5 at pitch 40). */
+	const vec3_t ga = {-ent->s.angles[PITCH], ent->s.angles[YAW], -ent->s.angles[ROLL]};
+	EntityAxes(ga, f, l, u);
 	VectorSubtract(start, ent->s.origin, d);
 	ls[0] = DotProduct(d, f);
 	ls[1] = DotProduct(d, l);

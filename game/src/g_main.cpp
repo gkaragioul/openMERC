@@ -25,6 +25,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 
 #include "g_local.h"
+#include <math.h>
 #include "modes/g_modes.h" /* G9 */
 #include "ghoulglue/gg_ghoul.h" /* G9 */
 #include "scriptglue/g_scriptglue.h" /* G6b */
@@ -91,6 +92,7 @@ cvar_t *sv_pmodlistfile, *sv_altpmodlistfile;
 
 void SpawnEntities(const char *mapname, const char *entities, const char *spawnpoint);
 void G_RunFrame(void);
+void OmAudit_Frame(void);
 
 //===================================================================
 // variadic import helpers
@@ -152,6 +154,40 @@ trace_t gi_wrap::trace(const float *start, const float *mins, const float *maxs,
 {
 	trace_t tr;
 	memset(&tr, 0, sizeof(tr));
+
+	/* Guard against invalid parameters during cutscenes or uninitialized
+	   state on arm64: a NULL or non-finite start/end would crash the
+	   engine trace. Return a zero (no-hit) trace instead. */
+	if (!start || !end)
+	{
+		tr.fraction = 1.0f;
+		return tr;
+	}
+	for (int k = 0; k < 3; k++)
+	{
+		if (!isfinite(start[k]) || !isfinite(end[k]))
+		{
+			tr.fraction = 1.0f;
+			return tr;
+		}
+		if (mins && !isfinite(mins[k]))
+		{
+			tr.fraction = 1.0f;
+			return tr;
+		}
+		if (maxs && !isfinite(maxs[k]))
+		{
+			tr.fraction = 1.0f;
+			return tr;
+		}
+	}
+
+	if (!gix.trace)
+	{
+		tr.fraction = 1.0f;
+		return tr;
+	}
+
 	gix.trace(start, mins, maxs, end, pass, mask, &tr);
 	return tr;
 }
@@ -639,6 +675,7 @@ void G_RunFrame(void)
 
 	G_MoverSoundsFrame();
 	G_WorldSpawnerFrame();
+	OmAudit_Frame(); /* RLabs test aid, inert unless started with omaudit (ai/ai_audit.cpp) */
 
 	// single player: fade to black while player 1 is dead, then respawn (SPEC-760 B9.3)
 	if (!deathmatch->value && game.maxclients >= 1) {

@@ -206,7 +206,8 @@ static bool CreateBot(int slot)
 		return false;
 	edict_t *ent = g_edicts + n;
 	Bot *b = &g_bots[n];
-	memset(b, 0, sizeof(*b));
+	*b = Bot(); /* value-initialise: zeroes the plain fields and resets route.steps (a std::vector, which a
+	               memset wiped without freeing; RLabs 64-bit scan 2026-11-05) */
 	b->inuse = true;
 	b->clientnum = n;
 	b->slot = slot;

@@ -448,16 +448,13 @@ static bool CharacterShotHurts(edict_t *shooter, edict_t *targ, const vec3_t muz
 	return sc && DistToSegment(point, muzzle, sc->s.origin) <= 12 && gix.irand(0, 10) < 6;
 }
 
-static void ImpactTempEnt(int type, const trace_t &tr, const vec3_t dir, int power, int style)
+// SPEC-771 C.2 TE 6/7, SPEC-AMEND-005 G18.23: the hit surface takes 25 damage-texture points (import #25, which queues
+// svc_damagetexture in front of the temp entity, SPEC-201 25); the impact is temp entity 7 when that changed the
+// surface's damage stage, else 6. fx::WeaponImpact applies the rest of that row: sky, blood lock, rate limit, PHS.
+static void ImpactTempEnt(const trace_t &tr, const vec3_t dir, int power, int style, int debris)
 {
-	gi.WriteByte(svc_temp_entity);
-	gi.WriteByte(type);
-	WriteImpactWorld(tr.endpos, tr.plane.normal);
-	WriteUnit1000(dir);
-	gi.WriteByte(power);
-	gi.WriteByte(style);
-	gi.WriteByte(rand() & 1);
-	gi.multicast(tr.endpos, MULTICAST_PVS);
+	bool stage = tr.surface && gix.damagetexture && gix.damagetexture(tr.surface, 25) != 0;
+	fx::WeaponImpact(tr, dir, power, style, debris, stage);
 }
 
 
@@ -485,6 +482,12 @@ static void BulletGlassWaterPass(edict_t *ent, int a, const vec3_t start, const 
 			tw.ent ? (tw.ent->classname ? tw.ent->classname : "?") : "null",
 			tw.ent && tw.ent != world ? tw.ent->takedamage : -1,
 			g_attack_nodamage ? 1 : 0, mat, glassWin ? 1 : 0);
+		// SPEC-782 3 step 7, SPEC-771 C.2: glass of the world takes no entity damage, but it shows the impact, its
+		// texture takes the hit and the alert rises
+		if (glassSurf && !DM() && (!tw.ent || !(tw.ent->client || (tw.ent->svflags & SVF_MONSTER)))) {
+			ImpactTempEnt(tw, dir, attacks[a].imp, 1, rand() & 1);
+			G_AlertNoise(0.2f);
+		}
 		return;
 	}
 	{
@@ -503,7 +506,7 @@ static void BulletGlassWaterPass(edict_t *ent, int a, const vec3_t start, const 
 		gi.dprintf("glasspass AFTER #%d inuse=%d hp=%d take=%d\n",
 			enumber, e2->inuse ? 1 : 0, e2->health, (int)e2->takedamage);
 		if (e2->inuse && !DM() && !(e2->client || (e2->svflags & SVF_MONSTER)))
-			ImpactTempEnt(6, tw, dir, attacks[a].imp, 1);
+			ImpactTempEnt(tw, dir, attacks[a].imp, 1, rand() & 1);
 	}
 	G_AlertNoise(0.2f);
 }
@@ -560,7 +563,7 @@ static void FireBullet(edict_t *ent, int a, const vec3_t start_in, const vec3_t 
 	if (tr.fraction < 1.0f && !DM()) {
 		if (!tr.ent || !(tr.ent->client || (tr.ent->svflags & SVF_MONSTER))) {
 			bool door = tr.ent && tr.ent->classname && strstr(tr.ent->classname, "door");
-			ImpactTempEnt(6, tr, dir, attacks[a].imp, door ? 0 : 1);
+			ImpactTempEnt(tr, dir, attacks[a].imp, door ? 0 : 1, rand() & 1);
 			if (ent->client)
 				om_ai::ShotAtNotice(ent, start, tr.endpos); /* G2: "shot at me" notices (SPEC-710 E1) */
 		}
@@ -673,7 +676,7 @@ static void KnifeSlash(edict_t *ent, const vec3_t start, const vec3_t dir, int d
 	if (tr.fraction == 1.0f || !tr.ent)
 		return;
 	if (!DM() && !(tr.ent->client || (tr.ent->svflags & SVF_MONSTER)))
-		ImpactTempEnt(6, tr, dir, 6, 2);
+		ImpactTempEnt(tr, dir, 6, 2, rand() & 1);
 	if (tr.ent->takedamage) {
 		T_Damage(tr.ent, ent, ent, dir, tr.endpos, start, damage, 1, 0x400100, MOD_KNIFE_SLASH);
 		if (ent->client && !ent->client->pers.isbot && ent->client->inv &&
@@ -737,7 +740,7 @@ static void ProjectileImpact(edict_t *self, edict_t *other, cplane_t *plane, csu
 	tr.ent = other;
 	vec3_t dir;
 	VectorNegate(plane->normal, dir);
-	fx::WeaponImpact(tr, dir, power, 0, 0, false);
+	ImpactTempEnt(tr, dir, power, 0, 0);
 }
 
 // rocket (14) and split halves
@@ -991,6 +994,9 @@ static void knife_touch(edict_t *self, edict_t *other, cplane_t *plane, csurface
 	gi.WriteDir(plane ? plane->normal : vec3_origin);
 	gi.WriteByte(3);
 	gi.multicast(self->s.origin, MULTICAST_PVS);
+	// SPEC-782 6: hitting the world also shows the weapon impact (single player, power 6, style 0)
+	if (!DM() && (!other || other == world))
+		ProjectileImpact(self, other, plane, surf, 6);
 	vec3_t ang;
 	if (plane)
 		vectoangles(plane->normal, ang);
@@ -1209,7 +1215,7 @@ static void DekkerGun(edict_t *ent, const vec3_t start, const vec3_t dir)
 		if (!tr.ent || tr.fraction == 1.0f)
 			break;
 		if (!DM() && !(tr.ent->client || (tr.ent->svflags & SVF_MONSTER)))
-			ImpactTempEnt(6, tr, dir, attacks[29].imp, 1);
+			ImpactTempEnt(tr, dir, attacks[29].imp, 1, rand() & 1);
 		if (tr.ent == world)
 			break;
 		if (tr.ent->takedamage)

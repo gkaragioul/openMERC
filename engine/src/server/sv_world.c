@@ -41,7 +41,7 @@
 #define MAX_TOTAL_ENT_LEAFS 128
 #define MAX_FILTER_HITS 1024
 
-#define STRUCT_FROM_LINK(l, t, m) ((t *)((byte *)l - (byte *)&(((t *)NULL)->m)))
+#define STRUCT_FROM_LINK(l, t, m) ((t *)((byte *)(l) - offsetof(t, m))) /* RLabs: offsetof instead of the null-pointer trick (UBSan) */
 #define EDICT_FROM_AREA(l) STRUCT_FROM_LINK(l, edict_t, area)
 
 typedef struct areanode_s
@@ -1114,6 +1114,12 @@ SV_FreeMapExtras(void)
 		sv.surfacestage = NULL;
 	}
 
+	if (sv.surfacerecord)
+	{
+		Z_Free(sv.surfacerecord);
+		sv.surfacerecord = NULL;
+	}
+
 	sv.numsurfaces = 0;
 
 	if (sv_leafregion)
@@ -1137,6 +1143,98 @@ SV_FreeMapExtras(void)
 	}
 
 	sv_nummodels = 0;
+}
+
+/* ---------------------------------------------------------------------
+ * texture table and damageable surfaces. Implements: SPEC-313 s4, SPEC-AMEND-005 G18.23
+ * --------------------------------------------------------------------- */
+
+#define SV_MAX_TEXRECORDS 500
+#define SV_M32_HEADER 968
+#define SV_M32_DAMAGENAME 0x184
+#define SV_M32_DAMAGEVALUE 0x37C
+
+typedef struct
+{
+	char name[MAX_QPATH];   /* <set>/<name>, without ".m32" */
+	int damaged;            /* record of the damaged texture, 0 = none */
+	int health;             /* 0 = cannot be damaged */
+} sv_texrecord_t;
+
+static sv_texrecord_t sv_texrecords[SV_MAX_TEXRECORDS]; /* record 0 stays empty */
+static int sv_numtexrecords = 1;
+
+/* a texture's record, registered once by name: missing file or full table is record 0. The record exists before its
+   damaged texture is registered, so a cycle in the data ends at the name found again */
+static int
+SV_TexRecord(const char *texture)
+{
+	static byte header[SV_M32_HEADER];
+	char name[MAX_QPATH], path[MAX_QPATH + 16], damaged[129];
+	fileHandle_t f = 0;
+	size_t n;
+	int i, rec;
+
+	Q_strlcpy(name, texture, sizeof(name));
+	n = strlen(name);
+
+	if ((n > 4) && !Q_stricmp(name + n - 4, ".m32"))
+	{
+		name[n - 4] = 0;
+	}
+
+	if (!name[0])
+	{
+		return 0;
+	}
+
+	for (i = 1; i < sv_numtexrecords; i++)
+	{
+		if (!Q_stricmp(sv_texrecords[i].name, name))
+		{
+			return i;
+		}
+	}
+
+	if (sv_numtexrecords >= SV_MAX_TEXRECORDS)
+	{
+		return 0;
+	}
+
+	Com_sprintf(path, sizeof(path), "textures/%s.m32", name);
+
+	if (FS_FOpenFile(path, &f, false) < SV_M32_HEADER)
+	{
+		if (f)
+		{
+			FS_FCloseFile(f);
+		}
+
+		return 0;
+	}
+
+	n = FS_Read(header, SV_M32_HEADER, f);
+	FS_FCloseFile(f);
+
+	if (n < SV_M32_HEADER)
+	{
+		return 0;
+	}
+
+	rec = sv_numtexrecords++;
+	memset(&sv_texrecords[rec], 0, sizeof(sv_texrecords[rec]));
+	Q_strlcpy(sv_texrecords[rec].name, name, sizeof(sv_texrecords[rec].name));
+	memcpy(damaged, header + SV_M32_DAMAGENAME, 128);
+	damaged[128] = 0;
+
+	if (damaged[0])
+	{
+		/* the integer part of the damage value as a signed byte */
+		sv_texrecords[rec].health = (signed char)(int)LittleFloat(*(const float *)(header + SV_M32_DAMAGEVALUE));
+		sv_texrecords[rec].damaged = SV_TexRecord(damaged);
+	}
+
+	return rec;
 }
 
 void
@@ -1183,6 +1281,8 @@ SV_LoadMapExtras(const char *mapfile)
 		sv.surfaces = Z_Malloc(sv.numsurfaces * sizeof(sof_surface_t));
 		sv.surfacedamage = Z_Malloc(sv.numsurfaces * sizeof(int));
 		sv.surfacestage = Z_Malloc(sv.numsurfaces * sizeof(int));
+		sv.surfacerecord = Z_Malloc(sv.numsurfaces * sizeof(int));
+		sv_numtexrecords = 1; /* the table starts empty at every map load (SPEC-313 s4) */
 
 		for (i = 0; i < sv.numsurfaces; i++)
 		{
@@ -1199,6 +1299,11 @@ SV_LoadMapExtras(const char *mapfile)
 			out->value = LittleLong(*(const int *)(in + 36));
 			memcpy(out->texture, in + 40, 32);
 			out->texture[31] = 0;
+
+			/* SPEC-AMEND-005 G18.23: the counter starts at the health of the original record, so the first damage of
+			   any amount switches a damageable surface; the stage is 0 (the arrays are new and zeroed) */
+			sv.surfacerecord[i] = SV_TexRecord(out->texture);
+			sv.surfacedamage[i] = sv_texrecords[sv.surfacerecord[i]].health;
 		}
 	}
 
@@ -1341,14 +1446,59 @@ SV_MaterialList(byte *buf, int capacity)
 	return n;
 }
 
-/* game import #25 (SPEC-313 s4). The damaged-texture chain comes from the
-   .m32 headers; not loaded yet, so no surface takes damage (I1b.md). */
+/* game import #25 (SPEC-313 s4, SPEC-AMEND-005 G18.23). The message is queued in the multicast buffer, so it travels
+   in front of the weapon-impact temp entity the caller writes next, in the same multicast (SPEC-201 s25) */
 int
 SV_DamageTexture(sof_surface_t *surface, int damage)
 {
-	(void)surface;
-	(void)damage;
-	return 0;
+	const sv_texrecord_t *current;
+	int index = SV_SurfaceIndex(surface);
+	qboolean trace = sv_showdamage && sv_showdamage->value;
+
+	if (trace)
+	{
+		Com_DPrintf("Doing %d damage\n", damage);
+	}
+
+	if ((index < 0) || !sv.surfacerecord[index])
+	{
+		return 0;
+	}
+
+	current = &sv_texrecords[sv.surfacerecord[index]];
+
+	if (!current->health)
+	{
+		return 0;
+	}
+
+	sv.surfacedamage[index] += damage;
+
+	if (trace)
+	{
+		Com_DPrintf("Damaging %s, %d of %d\n", current->name, sv.surfacedamage[index], current->health);
+	}
+
+	if (sv.surfacedamage[index] < current->health)
+	{
+		return 0;
+	}
+
+	sv.surfacerecord[index] = current->damaged;
+	sv.surfacedamage[index] = 0;
+	sv.surfacestage[index]++;
+
+	MSG_WriteByte(&sv.multicast, sofsvc_damagetexture);
+	MSG_WriteShort(&sv.multicast, index);
+	MSG_WriteByte(&sv.multicast, sv.surfacestage[index]);
+
+	if (trace)
+	{
+		Com_DPrintf("Changing to %s, level %d\n", sv_texrecords[sv.surfacerecord[index]].name,
+				sv.surfacestage[index]);
+	}
+
+	return 1;
 }
 
 /* OpenMerc debugging: sv_tracetest <x> <y> <z> - position tests of the

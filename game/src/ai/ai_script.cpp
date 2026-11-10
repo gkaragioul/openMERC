@@ -81,6 +81,18 @@ public:
 		float dx = ent->maxs[0] - ent->mins[0], dy = ent->maxs[1] - ent->mins[1];
 		return 0.5f * sqrtf(dx * dx + dy * dy);
 	}
+	/* A move command given neither a destination (0x04) nor a target (0x80) has no place to reach: its destination is
+	 * the actor's own position, so "arrived" was true at the first think and the actor stood up again. The stock data
+	 * uses such commands to play a moving animation for a stated time or to its end (tsr2 `hallbaddie3` crawling on his
+	 * back for 999 s, ger4 Dekker's 6.2 s crawl, kos2 the men on fire, nyc3 the climb over the ladder top). Only a
+	 * looping animation with neither, such as irq2a's `ai(hawk, 119, i1=130)` ladder, completes one think per copy.
+	 * A negative radius tells ScriptMoveArrived there is nothing to arrive at (play-test 2026-11-08). */
+	float ArrivalRadiusFor(edict_t *ent, const ScriptAction &f)
+	{
+		if (!(f.flags & (0x04 | 0x80)) && ((f.flags & 0x40) || (f.anim && (f.anim->flags & ANIMF_FINISH_CYCLE))))
+			return -1.0f;
+		return ArrivalRadius(ent);
+	}
 	bool MoveComplete(edict_t *ent, const ScriptAction &f, bool anim_ended)
 	{
 		/* with flag 0x100 (lethal) duration and animation end are ignored; arrival still ends a move
@@ -90,7 +102,7 @@ public:
 			return true;
 		if (!lethal && anim_ended)
 			return true;
-		return ScriptMoveArrived(ent, f.dest, f.start_pos, ArrivalRadius(ent));
+		return ScriptMoveArrived(ent, f.dest, f.start_pos, ArrivalRadiusFor(ent, f));
 	}
 	void CompleteFront()
 	{
@@ -100,6 +112,10 @@ public:
 		if (token && g_report_ai_done)
 			g_report_ai_done(token);
 	}
+
+	/* when the last jump or fall command completed for the script (SPEC-750 12.4: as soon as it started); the stated time of
+	 * the next command runs from there, even while the body is still landing. 0 = caught up. */
+	float timed_from = 0;
 
 	void StandIdle(edict_t *ent, AI *ai);
 	void Plan(edict_t *ent, AI *ai) override;
@@ -197,7 +213,7 @@ void ScriptedAfterLoad(edict_t *ent, AI *ai, Decision *dd)
 	VectorCopy(d->saved_dest, f.dest);
 	Action *c = ai->current;
 	if (f.started && f.kind == 1 && c && c->owner == d && (c->script_flags & 0x80000000))
-		SetScriptMove(c, f.start_pos, d->ArrivalRadius(ai->owner));
+		SetScriptMove(c, f.start_pos, d->ArrivalRadiusFor(ai->owner, f));
 }
 
 void SetScriptedFinished(Decision *d)
@@ -317,7 +333,7 @@ void ScriptedDecision::Plan(edict_t *ent, AI *ai)
 		ScriptAction &f = items.front();
 		if (!f.started) {
 			f.started = 1;
-			f.start_time = Now();
+			f.start_time = ((f.flags & 0x40) && timed_from > 0.0f) ? timed_from : Now();
 			VectorCopy(ent->s.origin, f.start_pos);
 			widened = 0;
 		}
@@ -386,20 +402,55 @@ void ScriptedDecision::Plan(edict_t *ent, AI *ai)
 	last_anim = rec;
 	/* the 0x40 duration only when given, else D3's default (SPEC-AMEND-006 G2.13) */
 	float dur = lethal ? 999999.0f : explicit_dur ? s.duration : d3_dur;
+	/* SPEC-750 12.4: without a stated duration a command completes when its animation has finished. D3's duration 0 is for
+	 * the idles the decisions re-plan every think; a one-shot animation given by a script (kicking a door 20 times in the
+	 * stock data, yelling, crouching at an explosion, a nod) was cut at its first think and the actor just stood there */
+	if (!explicit_dur && !lethal && kind != 1 && rec && !(rec->flags & ANIMF_LOOP) && dur <= 0.0f)
+		dur = 9999.0f;
+	/* SPEC-750 12.4: the command after a jump or fall starts when that command completed, at its start; only the body waits
+	 * for the landing. sud1 intro: John's 3.2 s talk began after he had landed, so his run, meant for the cut to the next
+	 * shot, came 2 s into a 3 s shot. A stated time already used up plays one frame and passes the rest on. */
+	if (timed_from > 0.0f) {
+		if (explicit_dur && !lethal && !keep) {
+			float behind = Now() - timed_from;
+			if (behind >= s.duration) {
+				timed_from += s.duration;
+				dur = FRAMETIME;
+			} else {
+				dur = s.duration - behind;
+				timed_from = 0;
+			}
+		} else
+			timed_from = 0;
+	}
 	if (keep && !lethal && explicit_dur) {
 		dur = s.duration - (Now() - s.start_time);
 		if (dur < FRAMETIME)
 			dur = FRAMETIME;
 	}
+	/* a play-in-place command whose record is a moving animation moves the way the actor faces, for its stated time (Hawk's
+	 * crawl along the duct in sud3 midgame, Mullins's slide in sud2) */
+	if (kind == 0 && explicit_dur && (cls == 7 || cls == 8)) {
+		vec3_t forward;
+		AngleVectors(ent->s.angles, forward, nullptr, nullptr);
+		VectorMA(ent->s.origin, 1000.0f, forward, dest);
+	}
 	Action *a = MakeAction(ai, cls, this, nullptr, rec, dest, IsZero(face) ? nullptr : face, dur, ends);
 	a->done_token = keep ? 0 : s.done_token; /* a move command reports its signal itself when it arrives */
 	/* jump and fall commands complete for the script as soon as they start (SPEC-750 12.4); the AI action plays on */
 	bool done_at_start = (kind == 3 || kind == 4) && !lethal;
-	if (done_at_start)
+	if (done_at_start) {
 		a->done_token = 0;
+		timed_from = Now();
+	}
 	a->script_flags = s.flags | 0x80000000; /* marks a scripted action (SPEC-750 12.4 completion rules) */
 	if (keep)
-		SetScriptMove(a, s.start_pos, ArrivalRadius(ent));
+		SetScriptMove(a, s.start_pos, ArrivalRadiusFor(ent, s));
+	else if (kind == 0 && explicit_dur)
+		/* a play-in-place command whose record is a moving animation makes a move action with no place to reach: as a move
+		 * it "arrived" at its first think and the script went on at once (sud3 midgame: `ai(hawk2, 127, f=3.6, signal)`
+		 * skipped Hawk's whole shot). It plays for the stated time. */
+		SetScriptMove(a, ent->s.origin, -1.0f);
 	if (s.lethal || s.bolt) {
 		a->target = s.target;
 		a->lethal = s.lethal;

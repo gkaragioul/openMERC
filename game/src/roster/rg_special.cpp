@@ -56,6 +56,8 @@ bool rg_AnimalTypeSetup(edict_t *ent, om_ai::AI *ai, int type)
 	ent->s.renderfx |= RF_GHOUL;
 	if (ai) {
 		ai->scale = scale;
+		if (!bull)
+			om_ai::ScaledFeetOnFloor(ent, scale);
 		ai->ghoul_object = GG_Object(m);
 	}
 	// 4. body (created once), its precache

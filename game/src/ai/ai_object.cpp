@@ -542,7 +542,10 @@ void OmAI::Think(edict_t *ent)
 	if (!ent->inuse || ent->ai != this)
 		return;
 	/* 11. ground, water, world effects */
-	if (ent->groundentity && ent->groundentity->linkcount != ground_linkcount)
+	/* a character that has landed on a prop gets no ground from the fall (only BSP and solid 4 count there), and with no ground
+	 * the combat plan only ever stands: the tsr1 skinheads riding the parallel train saw the player and never fired; nyc3's skylight
+ * guard drifting up at 1 unit/s too (CheckGround itself leaves a rising character alone; DEVIATIONS.md) */
+	if (!ent->groundentity || ent->groundentity->linkcount != ground_linkcount)
 		CheckGround(ent, this);
 	CategorizePosition(ent);
 	WorldEffects(ent);
@@ -635,6 +638,20 @@ void CharacterSetup(edict_t *ent, bool doa)
 	 * entities 140 and 152) */
 	ent->movetype = MOVETYPE_NONE;
 	ent->nextthink = level.time + FRAMETIME;
+	gi.linkentity(ent);
+}
+
+/* The model is scaled about the origin, so a size-scaled character's feet are scale x the box bottom below the origin
+ * while the box stayed at -32: Sabre's (1.1) boots sank 3 units into the train roof and could not be seen, and the
+ * same for the raider bosses and the larger dogs (play-test 2026-11-08). The floor smoothing would only correct it on a
+ * second request of the same preset, which a scripted pose never makes. Same bottom in the world, feet on it. */
+void ScaledFeetOnFloor(edict_t *ent, float scale)
+{
+	if (scale <= 1.0f)
+		return;
+	float drop = ent->mins[2] * (scale - 1.0f);
+	ent->mins[2] += drop;
+	ent->s.origin[2] -= drop;
 	gi.linkentity(ent);
 }
 

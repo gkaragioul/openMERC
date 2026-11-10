@@ -14,6 +14,8 @@
 
 using namespace om_script;
 
+bool OmAudit_Active(void); /* RLabs test aid (ai/ai_audit.cpp) */
+
 namespace sg {
 
 // ------------------------------------------------------------------------------------------------------------
@@ -37,7 +39,13 @@ bool GameHost::load_file(const char *path, std::vector<uint8_t> &out)
 float GameHost::cvar_value(const char *name) { return gix.cvar_value(name); }
 void GameHost::cvar_set(const char *name, const char *value) { gix.cvar_set(name, value); }
 void GameHost::cvar_set_value(const char *name, float value) { gix.cvar_setvalue(name, value); }
-void GameHost::add_command_text(const char *text) { gix.AddCommandString(text); }
+void GameHost::add_command_text(const char *text)
+{
+	/* RLabs test aid: a level must not end while its enemies are being checked */
+	if (::OmAudit_Active() && (!strncmp(text, "map ", 4) || !strncmp(text, "gamemap", 7) || !strncmp(text, "intermission", 12)))
+		return;
+	gix.AddCommandString(text);
+}
 int GameHost::irand(int min, int max) { return gix.irand(min, max); }
 
 // ------------------------------------------------------------------------------------------------------------

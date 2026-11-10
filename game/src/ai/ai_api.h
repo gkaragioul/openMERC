@@ -406,6 +406,7 @@ namespace om_ai {
 typedef AI *(*AIFactory)(int type_code);
 void RegisterAIFactory(int type_code, AIFactory make);
 
+void ScaledFeetOnFloor(edict_t *ent, float scale); /* size-scaled characters: feet on the box bottom */
 void CharacterSetup(edict_t *ent, bool dead_on_arrival = false); /* rule 1.1 */
 AI *CreateAI(edict_t *ent, int type_code);             /* rule 1.2.1; prints the invalid-code error */
 void InitProfile(AI *ai);                              /* rule 1.2.3-1.2.6 from the SPEC-700 tables */

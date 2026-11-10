@@ -59,6 +59,7 @@ cvar_t *hostname;
 cvar_t *public_server; /* should heartbeats be sent */
 cvar_t *sv_reconnect_limit;
 cvar_t *sv_max_ghoul_mp;
+cvar_t *sv_showdamage; /* developer trace of damaged textures (SPEC-313 s4) */
 cvar_t *sv_ghoul_stub;
 cvar_t *sv_entfile; /* referenced by common code */
 static cvar_t *sv_jumpcinematic;
@@ -646,6 +647,7 @@ SV_Init(void)
 	sv_enforcetime = Cvar_Get("sv_enforcetime", "0", 0);
 	sv_reconnect_limit = Cvar_Get("sv_reconnect_limit", "3", CVAR_ARCHIVE);
 	sv_max_ghoul_mp = Cvar_Get("sv_max_ghoul_mp", "200", 0);
+	sv_showdamage = Cvar_Get("sv_showdamage", "0", 0);
 	allow_download = Cvar_Get("allow_download", "0", CVAR_ARCHIVE);
 	allow_download_maps = Cvar_Get("allow_download_maps", "1", CVAR_ARCHIVE);
 	allow_download_sounds = Cvar_Get("allow_download_sounds", "1", CVAR_ARCHIVE);

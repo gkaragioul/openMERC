@@ -961,10 +961,25 @@ static edict_t *SpawnPiece(G3Gore *g, int zi, bool gibPiece, const vec3_t gibDir
 		pi->Play(stand, G3_Time(), 0, true, ghoul::kPlayLoop, false, false);
 		fallback = true;
 	}
-	p->s.angles[YAW] = G3_flrand(-30, 30);
+	// RLabs (2026-11-05, owner report "shooting at his leg and nothing is happening"): a limb cut from a corpse that
+	// already lies on the floor keeps the exact place and pose it had on the body. The turn about the cap bolt, the
+	// push outwards and the toppling spin below are for a limb cut from a standing character; on a lying one they
+	// turned the limb into the floor and it was not seen (game-side rays: z 11.5..26.3 with the floor at 16).
+	bool lying = !fallback && !gibPiece && ch->health <= 0;
+	if (!lying)
+		p->s.angles[YAW] = G3_flrand(-30, 30);
 	*pinstOut = pi;
 	// motion
-	if (fallback) {
+	if (lying) {
+		VectorClear(p->velocity);
+		// a flat box whose bottom is the corpse's own floor: the piece rests where it lies
+		float below = p->s.origin[2] - (ch->s.origin[2] + ch->mins[2]);
+		if (below < 1)
+			below = 1;
+		VectorSet(p->mins, -8, -8, -below);
+		VectorSet(p->maxs, 8, 8, 4);
+		p->count = 3; // box set and no toppling spin (FinishPiece)
+	} else if (fallback) {
 		p->velocity[0] = 75 * gibDir[0];
 		p->velocity[1] = 75 * gibDir[1];
 		p->velocity[2] = (float)G3_irand(30, 70);
@@ -995,7 +1010,8 @@ static void FinishPiece(G3Gore *g, edict_t *p, IGhoulInst *pi, int zi, bool gibP
 	if (!p || !pi)
 		return;
 	const G3Zone &z = g->zones[zi];
-	if (p->count != 2) {
+	bool lying = p->count == 3;
+	if (p->count != 2 && !lying) {
 		// box: the exact posed bounds of the zone's owner part, 0.3 s ahead, along the character's entity axes;
 		// only the extent is used, centred on the origin (G3.11)
 		Matrix4 root;
@@ -1011,7 +1027,7 @@ static void FinishPiece(G3Gore *g, edict_t *p, IGhoulInst *pi, int zi, bool gibP
 		}
 	}
 	p->count = 0;
-	if (p->maxs[2] - p->mins[2] > p->maxs[0] - p->mins[0] && p->maxs[2] - p->mins[2] > p->maxs[1] - p->mins[1])
+	if (!lying && p->maxs[2] - p->mins[2] > p->maxs[0] - p->mins[0] && p->maxs[2] - p->mins[2] > p->maxs[1] - p->mins[1])
 		p->avelocity[PITCH] = -150;
 	// stump blood on the piece's cap bolt only for rule-3 pieces; gib pieces get none (G3.11; observed black box)
 	if (z.pieceCapBolt && !gibPiece)

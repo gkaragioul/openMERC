@@ -14,6 +14,8 @@
 
 #ifdef _WIN32
 #define SV_PLAYER_LIBRARY "player.dll"
+#elif defined(__APPLE__)
+#define SV_PLAYER_LIBRARY "player.dylib" /* OpenMerc macOS build: native Mach-O module name */
 #else
 #define SV_PLAYER_LIBRARY "player.so"
 #endif

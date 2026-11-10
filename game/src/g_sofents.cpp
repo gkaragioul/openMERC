@@ -6,8 +6,10 @@
 // Implements: SPEC-761 2, 3, 4, 6, 7.4, 8, 9
 
 #include "g_local.h"
+#include "damage/damage_api.h" /* Body_Of, Gore_DekkerSplit */
 #include "bots/bot_api.h" /* G5 */
 #include "ai/ai_hooks.h" /* G2 */
+#include "nav/nav_api.h" /* G5: hidden spawn spot for the world spawner */
 
 void ED_CallSpawn(edict_t *ent);
 
@@ -212,9 +214,16 @@ void SP_func_Dekker_marker(edict_t *ent) { PointHelper(ent); }
 
 static void dekker_split_use(edict_t *self, edict_t *other, edict_t *activator)
 {
-	edict_t *b = G_Find(NULL, FOFS(classname), "m_x_mraiderboss2");
-	if (b && b->takedamage)
+	/* SPEC-761 3.4, SPEC-721 9: the first Dekker that has a character body takes 1000 damage and is cut at the chest
+	 * (the end of ger4: the split itself was never called, he stayed whole) */
+	edict_t *b = NULL;
+	while ((b = G_Find(b, FOFS(classname), "m_x_mraiderboss2")) != NULL && !Body_Of(b))
+		;
+	if (!b)
+		return;
+	if (b->takedamage)
 		T_Damage(b, self, self, vec3_origin, b->s.origin, vec3_origin, 1000, 0, 0, MOD_CRUSH);
+	Gore_DekkerSplit(b);
 }
 void SP_func_Dekker_split(edict_t *ent)
 {
@@ -831,6 +840,86 @@ void G_AlertNoise(float amount)
 		level.alert = cap;
 }
 
+/* RLabs (2026-11-05, play-tester: "i put huge numbers of enemies, is see no difference. IS that working at all?"): the
+ * alert meter and its PADD sounds ran, but the world spawn itself (SPEC-761 §8) was never written, so the Spawning
+ * setting only made the alarm beep. One attempt, as the spec gives it. */
+static float g_world_last_spawn;
+
+static void G_WorldSpawn(edict_t *p)
+{
+	int nearby = 0;
+	for (int i = 1; i < globals.num_edicts; i++) {
+		edict_t *e = &g_edicts[i];
+		/* living characters that are in the level: not dormant ones waiting for their trigger (not solid, unseen) */
+		if (!e->inuse || !e->ai || e->health <= 0 || e->client || (e->spawnflags & 0x10 /* SF_DORMANT, ai_api.h */) || e->solid == SOLID_NOT)
+			continue;
+		vec3_t d;
+		VectorSubtract(e->s.origin, p->s.origin, d);
+		if (VectorLength(d) <= 600)
+			nearby++;
+	}
+	if (nearby > (int)game.spawn_maxnear + 1) {
+		if (ei_show->value)
+			gi.dprintf("World can't spawn - too many guys nearby\n");
+		return;
+	}
+	vec3_t spot;
+	if (!Nav_HiddenSpawnSpot(spot, 0)) {
+		if (ei_show->value)
+			gi.dprintf("World can't spawn - no spots available for spawning\n");
+		return;
+	}
+	spot[2] += 8;
+	static const vec3_t mins = {-16, -16, -32}, maxs = {16, 16, 41};
+	trace_t tr = gi.trace(spot, (float *)mins, (float *)maxs, spot, NULL, MASK_MONSTERSOLID);
+	if (tr.startsolid || tr.allsolid) {
+		if (ei_show->value)
+			gi.dprintf("World spawn trying to spawn, but spot is occupied\n");
+		return;
+	}
+	const char *classes[3];
+	int n = 0;
+	for (int i = 0; i < 3; i++)
+		if (level.spawn_classes[i][0])
+			classes[n++] = level.spawn_classes[i];
+	if (!n) {
+		if (ei_show->value)
+			gi.dprintf("World spawn trying to spawn, but no fields set\n");
+		return;
+	}
+	edict_t *e = G_Spawn();
+	e->classname = (char *)classes[rand() % n];
+	VectorCopy(spot, e->s.origin);
+	vec3_t to;
+	VectorSubtract(p->s.origin, spot, to);
+	e->s.angles[YAW] = vectoyaw(to);
+	VectorCopy(mins, e->mins);
+	VectorCopy(maxs, e->maxs);
+	spawn_temp_t save = st;
+	memset(&st, 0, sizeof(st));
+	ED_CallSpawn(e);
+	st = save;
+	if (!e->inuse)
+		return;
+	if (!e->ai) {
+		G_FreeEdict(e);
+		return;
+	}
+	tr = gi.trace(e->s.origin, e->mins, e->maxs, e->s.origin, e, MASK_MONSTERSOLID);
+	if (tr.startsolid) {
+		G_FreeEdict(e);
+		if (ei_show->value)
+			gi.dprintf("World spawn trying to spawn, but spot is occupied\n");
+		return;
+	}
+	e->flags |= FL_SPAWNED;
+	g_world_last_spawn = level.time;
+	if (ei_show->value) {
+		gi.dprintf("World spawned in a guy\n");
+		gi.sound(e, CHAN_AUTO, gi.soundindex("Weapons/mpg/fire.wav"), 1, ATTN_NORM, 0);
+	}
+}
+
 void G_WorldSpawnerFrame(void)
 {
 	edict_t *p = G_FirstPlayer();
@@ -849,12 +938,16 @@ void G_WorldSpawnerFrame(void)
 		return;
 	}
 	float C = level.alert_cooldown, F = game.spawn_alertfade;
+	if (g_world_last_spawn > level.time)
+		g_world_last_spawn = 0; /* a new level or a loaded game */
 	if (enabled && level.time < C) {
 		level.alert = 1;
 		if (level.time - level.last_alert_sound >= 0.75f) {
 			gi.sound(p, CHAN_AUTO, gi.soundindex("misc/padd/max.wav"), 1, ATTN_NONE, 0);
 			level.last_alert_sound = level.time;
 		}
+		if (level.time - g_world_last_spawn >= game.spawn_maxinterval)
+			G_WorldSpawn(p);
 		return;
 	}
 	if (enabled && level.time < C + F) {
@@ -875,6 +968,8 @@ void G_WorldSpawnerFrame(void)
 		gi.sound(p, CHAN_AUTO, gi.soundindex("misc/padd/warning.wav"), 0.4f, ATTN_NONE, 0);
 		level.last_alert_warning = level.time;
 	}
+	if (level.alert > 0.5f && level.time - g_world_last_spawn >= game.spawn_interval)
+		G_WorldSpawn(p);
 }
 
 //======================================================================

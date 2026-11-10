@@ -177,7 +177,10 @@ void GroundAction::HandleEvents(edict_t *ent, AI *ai, uint32_t ev)
 		AddEntityEvent(ent, 3);
 	if (ev & BODYEV_FIRE)
 		Fire(ent, ai);
-	if ((ev & BODYEV_JUMP) && (move_flags & MF_JUMP_IMPULSE) && ent->groundentity && !(ent->flags & FL_FLY)) {
+	/* a scripted jump also takes off from the air: an actor placed above a ledge (spawnflag 16 is not dropped to the floor)
+	 * got no push and fell straight down, as kos2's outro John did into the pit in front of the gun (DEVIATIONS.md) */
+	if ((ev & BODYEV_JUMP) && (move_flags & MF_JUMP_IMPULSE) && (ent->groundentity || (script_flags & 0x80000000)) &&
+	    !(ent->flags & FL_FLY)) {
 		float g = CvarValue(cv.sv_gravity);
 		if (g <= 0)
 			g = 800;
@@ -540,10 +543,15 @@ public:
 	}
 	explicit DyingAction(int c) : GroundAction(c, AK_DEATH) {}
 
-	void MakeDead(edict_t *ent, AI *ai)
+	void MakeDead(edict_t *ent, AI *ai, bool always = false)
 	{
-		if (ent->health > 0) {
-			ent->health = -1;
+		/* RLabs Mac port: a dead-on-arrival character (SPEC-732 §7) already spawns with health 0, so the health test
+		   skipped it and the body kept the live, standing-size solid box: the player could only walk around it and
+		   never reach the armour lying inside it (play-test, tsr1 men's room officer `mendsswat`, 2026-11-05). Class 5
+		   always applies the dead state. */
+		if (ent->health > 0 || always) {
+			if (ent->health > 0)
+				ent->health = -1;
 			ent->deadflag = DEAD_DEAD;
 			ent->solid = SOLID_BBOX;
 			ent->clipmask = 0x4000000;
@@ -559,7 +567,7 @@ public:
 		if (cls == 4)
 			return;
 		if (cls == 5) {
-			MakeDead(ent, ai);
+			MakeDead(ent, ai, true);
 			const G3Anim *h = Anim("std_shead_2frnt_n_n");
 			if (ai->body && h) {
 				ai->body->SetAnim(h, true);
@@ -604,6 +612,11 @@ public:
 		if (!b)
 			return false;
 		if (cls == 5) {
+			/* saves made before the fix above hold the body as a live solid box: make it dead on its next think */
+			if (!(ent->svflags & SVF_DEADMONSTER)) {
+				MakeDead(ent, ai, true);
+				gi.linkentity(ent);
+			}
 			b->Think();
 			if (record)
 				ai->ChangeBBox(ent, b->cur ? b->cur->posture : record->posture, true);
@@ -725,6 +738,9 @@ public:
 class JumpAction : public GroundAction { /* class 9 */
 public:
 	vec3_t start_velocity = {0, 0, 0};
+	/* a scripted jump by an actor placed above the floor: where it began. Not saved, a load only ends the stop over the target */
+	bool began_in_air = false;
+	vec3_t air_from = {0, 0, 0};
 	void SaveTail(SaveRec &r) override { r.V(112, start_velocity); } /* SPEC-711 class 9 tail */
 	JumpAction() : GroundAction(9, AK_JUMP) {}
 	void Start(edict_t *ent, AI *ai) override
@@ -740,6 +756,8 @@ public:
 			VectorMA(ent->s.origin, 64, f, D);
 			VectorCopy(D, destination);
 		}
+		began_in_air = (script_flags & 0x80000000) && !ent->groundentity;
+		VectorCopy(ent->s.origin, air_from);
 		float g = CvarValue(cv.sv_gravity);
 		if (g <= 0)
 			g = 800;
@@ -787,6 +805,13 @@ public:
 			return true;
 		float now = Now();
 		if (!ent->groundentity) {
+			/* a jump begun in the air falls further than its impulse allows for and keeps its sideways speed: kos2 outro John ended
+			 * inside a wall with every step of his run refused. The sideways speed is cut once he has covered the distance to the
+			 * target; he then lands clear of the wall at the same spot each play (runs 0265, 0266). */
+			if (began_in_air && HDist2(ent->s.origin, air_from) >= HDist2(destination, air_from)) {
+				ent->velocity[0] = ent->velocity[1] = 0;
+				began_in_air = false;
+			}
 			if (ent->velocity[2] > 0 && now < landing_check) {
 				float left = landing_check - now;
 				if (left > 0.05f) {
@@ -803,6 +828,10 @@ public:
 			}
 			return false;
 		}
+		/* SPEC-711: the `inair` note pauses the animation until landing. Nothing resumed it here, so every jump held the actor
+		 * on the spot until the 3 s limit below (kos2 outro: John landed, then missed his run across the last shot). */
+		if (ai->body && ai->body->pauseKind)
+			ai->body->Resume();
 		if ((ai->body && ai->body->AnimDone()) || now > landing_check + 3) {
 			VectorClear(ent->velocity);
 			*m = HDist(destination, ent->s.origin) <= 30 ? 1.0f : 0.0f;
@@ -825,6 +854,10 @@ public:
 	void Start(edict_t *ent, AI *ai) override
 	{
 		left_ground = 0; /* also when the previous fall action is reused (SPEC-700 rule 8) */
+		/* a command with no destination arrives here as the actor's own position, and "towards" it goes nowhere: an actor on a
+		 * ledge stood there until the action ran out (43 stock commands). SPEC-711 class 10: forward when there is none. */
+		if (HDist2(destination, ent->s.origin) < 0.01f)
+			VectorClear(destination);
 		GroundAction::Start(ent, ai);
 	}
 	bool Think(edict_t *ent, AI *ai, float *m, float *r) override
@@ -874,6 +907,8 @@ class AttackAction : public GroundAction { /* classes 13, 14 */
 public:
 	int target_health = 0;
 	int leap = 0;
+	bool scripted_kill = false; /* the lethal flag as given: firing clears `lethal`. Not saved, a load ends the repeats */
+	int lethal_refires = 0;
 	void SaveTail(SaveRec &r) override /* SPEC-711 classes 13/14: target health, creation time, leap state */
 	{
 		r.I(112, target_health);
@@ -890,6 +925,7 @@ public:
 			ai->target = target;
 		if (lethal && target && target->health > 1)
 			target->health = 1;
+		scripted_kill = lethal && target;
 		target_health = target ? target->health : 0;
 		PlayRecord(ent, ai, this, true);
 		start_time = Now();
@@ -915,6 +951,19 @@ public:
 		*m = step_ok ? 1.0f : 0.0f;
 		*r = alive ? 1.0f : 0.0f;
 		bool anim_done = !b || b->AnimDone() || b->pauseKind;
+		/* a lethal attack ends only with the target dead (SPEC-AMEND-005 G2.1); firing clears the lethal flag whether the shot
+		 * hit or not, and the record has a single `fire` note, so a miss left the action waiting for ever (sud3 Dekker: John's
+		 * first shot at a running raider, 7 plays of 10). Fire again each second; on the third second the target dies regardless
+		 * (DEVIATIONS.md). */
+		if (cls == 13 && scripted_kill && alive && Now() - start_time >= 1.0f + lethal_refires) {
+			if (lethal_refires++ < 2) {
+				lethal = 1;
+				Fire(ent, ai);
+			} else {
+				T_Damage(target, ent, ent, vec3_origin, target->s.origin, vec3_origin, 9999, 0, 0, MOD_CRUSH);
+				alive = target->inuse && target->health > 0;
+			}
+		}
 		bool end_ok = !ends_with_anim || anim_done;
 		bool dead_or_freed = target && (!target->inuse || target->health <= 0);
 		bool c1 = !lethal || (target && target->health <= 0);
@@ -963,6 +1012,8 @@ Action *NewAction(int cls)
  * direction from the script action's start position) */
 bool ScriptMoveArrived(edict_t *ent, const vec3_t dest, const vec3_t start, float radius)
 {
+	if (radius < 0)
+		return false; /* a move with nothing to reach (ArrivalRadiusFor) */
 	if (HDist2(dest, ent->s.origin) <= radius * radius)
 		return true;
 	vec3_t a, b;

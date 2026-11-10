@@ -522,6 +522,8 @@ static void GameRulesLevelStart(void)
 SpawnEntities
 ==============
 */
+void OmAudit_LevelStart(void);
+
 void SpawnEntities(const char *mapname, const char *entities, const char *spawnpoint)
 {
 	edict_t *ent;
@@ -659,6 +661,7 @@ void SpawnEntities(const char *mapname, const char *entities, const char *spawnp
 		gix.ghoulregisterall();
 	gix.loadingprogress(0.33f, 1);
 	level.precache_all = 0;
+	OmAudit_LevelStart(); /* RLabs test aid (ai/ai_audit.cpp) */
 }
 
 //===================================================================
