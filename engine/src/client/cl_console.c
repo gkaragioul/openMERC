@@ -441,6 +441,11 @@ Con_Print(char *txt)
 	   (the test build records with s_om_debug 24: one line per second would cover the top of the screen) */
 	quiet = !strncmp(txt, "OMsnd: [p=", 10);
 
+	/* run-log lines of the Mac port ("[MOUSE] want_grab=..." on every mouse capture change, "[SLOW] n frames over
+	   25 ms"): written for problem reports, they showed at the top of the game picture for three seconds at every
+	   start and focus change. They still go to the console and the logs. */
+	quiet = quiet || !strncmp(txt, "[MOUSE] ", 8) || !strncmp(txt, "[SLOW] ", 7);
+
 	while ((c = *txt))
 	{
 		/* count word length */

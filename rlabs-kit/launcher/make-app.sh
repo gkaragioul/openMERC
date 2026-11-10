@@ -9,12 +9,18 @@
 #
 # Environment: APP_NAME BUNDLE_ID EXEC_NAME VERSION ICON STAGE OUT_DIR LAUNCHER_DEFS (see the game's own
 # make-macos-app.sh). OUT_DIR must be outside the iCloud-synced Documents: codesign refuses bundles there.
+#   MIN_MACOS            oldest macOS of the app (default 13.0): the launcher's target and LSMinimumSystemVersion
+#   LAUNCHER_GAMEDATA=1  an app without the game: the launcher asks for the player's own game files on the first
+#                        start (rlk_gamedata.m, AppKit; LAUNCHER_DEFS carries the RLK_DATA_ settings)
+#   STRICT_MIN=1         stop when a binary in the app needs a newer macOS than MIN_MACOS (Homebrew's libraries
+#                        do: they only run on the macOS they were bottled for); without it that is only reported
 #
 # This version was written on 2026-11-08 for the Soldier of Fortune port; it keeps the earlier kit's
 # behaviour and log lines.
 set -euo pipefail
 : "${APP_NAME:?}" "${BUNDLE_ID:?}" "${EXEC_NAME:?}" "${VERSION:?}" "${STAGE:?}" "${OUT_DIR:?}" "${LAUNCHER_DEFS:?}"
 ICON=${ICON:-}
+MIN_MACOS=${MIN_MACOS:-13.0}
 KIT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 APP="$OUT_DIR/$APP_NAME.app"
 C="$APP/Contents"
@@ -26,8 +32,12 @@ C=$(cd "$C" && pwd -P)
 APP=$(dirname "$C")
 
 echo "== launcher"
-eval "clang -O2 -arch arm64 -mmacosx-version-min=14.0 -Wall $LAUNCHER_DEFS \"$KIT/rlk_launcher.c\" \
-  -framework CoreFoundation -o \"$C/MacOS/$EXEC_NAME\""
+LAUNCHER_MORE=""
+if [ "${LAUNCHER_GAMEDATA:-0}" = 1 ]; then
+  LAUNCHER_MORE="-fobjc-arc -Werror=unguarded-availability \"$KIT/rlk_gamedata.m\" -framework AppKit"
+fi
+eval "clang -O2 -arch arm64 -mmacosx-version-min=$MIN_MACOS -Wall $LAUNCHER_DEFS \"$KIT/rlk_launcher.c\" \
+  $LAUNCHER_MORE -framework CoreFoundation -o \"$C/MacOS/$EXEC_NAME\""
 
 echo "== resources"
 for f in "$STAGE"/*; do cp -c -R "$f" "$C/Resources/"; done
@@ -102,7 +112,7 @@ cat > "$C/Info.plist" <<EOF
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
-  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>LSMinimumSystemVersion</key><string>$MIN_MACOS</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.action-games</string>
   <key>LSSupportsGameMode</key><true/>
   <key>NSHighResolutionCapable</key><true/>
@@ -128,4 +138,21 @@ for f in "${ALL[@]}"; do
 done
 [ $left = 0 ] || exit 1
 echo "self-contained"
+
+echo "== check: the macOS each binary needs (the app says $MIN_MACOS)"
+newer=0
+for f in "${ALL[@]}"; do
+  need=$(otool -l "$f" | awk '/LC_BUILD_VERSION/{f=1} f&&/minos/{print $2; exit}')
+  if [ "$(printf '%s\n%s\n' "$need" "$MIN_MACOS" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)" != "$MIN_MACOS" ]; then
+    echo "   ${f#"$C"/} needs macOS $need"; newer=1
+  fi
+done
+if [ $newer = 1 ]; then
+  if [ "${STRICT_MIN:-0}" = 1 ]; then
+    echo "these binaries do not run on macOS $MIN_MACOS (libraries: tools/build/build-macos-deps.sh)" >&2; exit 1
+  fi
+  echo "   this app only runs on the macOS named above or newer (fine for this Mac, not for other people)"
+else
+  echo "every binary runs on macOS $MIN_MACOS"
+fi
 echo "Built $APP"

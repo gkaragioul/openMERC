@@ -18,6 +18,15 @@
  *
  * This version was written on 2026-11-08 for the Soldier of Fortune port; it keeps the earlier kit's
  * behaviour and log lines.
+ *
+ * An app that ships without the game (2026-11-10): with RLK_DATA_FILES the launcher makes sure the player's own
+ * game files are in {DATA}/RLK_DATA_DEST before it starts the game, and asks for them on the first start
+ * (rlk_gamedata.m, linked with AppKit by make-app.sh when LAUNCHER_GAMEDATA=1). e.g.
+ *   -DRLK_DATA_FILES='"pak0.pak","pak1.pak"' -DRLK_DATA_SIZES='705825871LL,20517183LL' -DRLK_DATA_OPTIONAL='"gs.pak"'
+ *   -DRLK_DATA_DEST='"game/base"' -DRLK_DATA_INTRO='"..."' -DRLK_DATA_NOTE='"..."'
+ * and RLK_ARGS then names {DATA}/game instead of {RES}/game. "--game-files <folder>" on the app's command line
+ * names the folder without a question (and brings in another copy later); it is not passed on to the game.
+ * Without RLK_DATA_FILES nothing changes.
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <errno.h>
@@ -51,6 +60,31 @@
 
 static const char *const env_list[] = {RLK_ENV, NULL};
 static const char *const arg_list[] = {RLK_ARGS, NULL};
+
+#ifdef RLK_DATA_FILES
+#include "rlk_gamedata.h"
+
+#ifndef RLK_DATA_DEST
+#error "define RLK_DATA_DEST (relative to the Application Support folder)"
+#endif
+#ifndef RLK_DATA_OPTIONAL
+#define RLK_DATA_OPTIONAL NULL
+#endif
+#ifndef RLK_DATA_INTRO
+#define RLK_DATA_INTRO "This app does not include the game. Choose the folder of your own copy."
+#endif
+#ifndef RLK_DATA_NOTE
+#define RLK_DATA_NOTE ""
+#endif
+
+static const char *const data_required[] = {RLK_DATA_FILES, NULL};
+static const char *const data_optional[] = {RLK_DATA_OPTIONAL, NULL};
+#ifdef RLK_DATA_SIZES
+static const long long data_sizes[] = {RLK_DATA_SIZES};
+_Static_assert(sizeof data_sizes / sizeof data_sizes[0] == sizeof data_required / sizeof data_required[0] - 1,
+	"RLK_DATA_SIZES needs one size for each of RLK_DATA_FILES");
+#endif
+#endif
 
 static char res_dir[PATH_MAX], data_dir[PATH_MAX], logs_dir[PATH_MAX], home_dir[PATH_MAX];
 
@@ -214,6 +248,46 @@ main(int argc, char **argv)
 
 	printf("[LAUNCHER] %s %s, app %s\n", RLK_GAME_NAME, stamp, contents);
 	fflush(stdout);
+
+#ifdef RLK_DATA_FILES
+	{ /* the player's own game files: asked for once, then found in the Application Support folder */
+		const rlk_gamedata_t game = {
+			RLK_GAME_NAME, data_required,
+#ifdef RLK_DATA_SIZES
+			data_sizes,
+#else
+			NULL,
+#endif
+			data_optional, RLK_DATA_INTRO, RLK_DATA_NOTE};
+
+		char given[PATH_MAX];
+		const char *named = NULL;
+
+		for (int i = 1; i + 1 < argc; i++)
+		{
+			if (!strcmp(argv[i], "--game-files"))
+			{
+				named = realpath(argv[i + 1], given) ? given : argv[i + 1];
+
+				/* not for the game: take the two words out of the arguments */
+				for (int k = i; k + 2 <= argc; k++)
+				{
+					argv[k] = argv[k + 2];
+				}
+
+				argc -= 2;
+				break;
+			}
+		}
+
+		snprintf(path, sizeof path, "%s/%s", data_dir, RLK_DATA_DEST);
+
+		if (!rlk_gamedata_ensure(&game, path, named))
+		{
+			return 0;
+		}
+	}
+#endif
 
 	for (int i = 0; env_list[i]; i++)
 	{

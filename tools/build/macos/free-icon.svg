@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: GPL-2.0-or-later
+     App icon of the downloadable Soldier of Fortune for Mac app: drawn for this port, no game artwork. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3f47"/>
+      <stop offset="1" stop-color="#14161a"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.46" r="0.5">
+      <stop offset="0" stop-color="#c8281e" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#c8281e" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#plate)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#glow)"/>
+  <rect x="103" y="103" width="818" height="818" rx="182" ry="182" fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="6"/>
+  <g fill="none" stroke="#d6362b" stroke-width="26" stroke-linecap="round">
+    <circle cx="512" cy="470" r="250"/>
+    <line x1="512" y1="150" x2="512" y2="300"/>
+    <line x1="512" y1="640" x2="512" y2="790"/>
+    <line x1="192" y1="470" x2="318" y2="470"/>
+    <line x1="706" y1="470" x2="832" y2="470"/>
+  </g>
+  <text x="512" y="545" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-weight="bold" font-size="210" letter-spacing="-4" fill="#f2f2f2">SoF</text>
+  <text x="512" y="852" text-anchor="middle" font-family="Helvetica Neue, Helvetica, Arial, sans-serif"
+        font-weight="bold" font-size="54" letter-spacing="10" fill="#9aa0a8">FOR MAC</text>
+</svg>

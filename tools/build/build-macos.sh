@@ -14,6 +14,10 @@
 #        OM_SDL3_PREFIX  Homebrew prefix for SDL3 (default: /opt/homebrew)
 #        OM_SKIP_SOUND=1 do not build OMsnd even if OpenAL Soft is installed
 #        RLABS_KIT     another RLabs kit folder (default: <repo>/rlabs-kit, docs/BUILD-macos.md)
+#        OM_MACOS_MIN  oldest macOS the binaries run on (default 13.0: the newest call in the tree is
+#                      CAMetalLayer.developerHUDProperties, macOS 13; a call that needs a newer macOS stops the build)
+#        OM_OPENAL_PREFIX  prefix of OpenAL Soft (default: Homebrew's). An app for other people needs SDL3 and
+#                      OpenAL Soft built for OM_MACOS_MIN as well: tools/build/build-macos-deps.sh
 # Output: <build root>/release/ - openMerc, openMerc-ded, ref_gl3.dylib, OMsnd.so,
 #         base/gamex86.so, base/player.so, base/zz_openmerc.pak. Add the game data (pak files)
 #         yourself; none is shipped.
@@ -25,10 +29,13 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 OUT=${OM_BUILD_DIR:-$REPO/build-macos-$ARCH-$CFG}
 JOBS=${OM_JOBS:-$(sysctl -n hw.ncpu)}
 SDL3_PREFIX=${OM_SDL3_PREFIX:-/opt/homebrew}
+MIN=${OM_MACOS_MIN:-13.0}
 OPENAL_PREFIX=${OM_OPENAL_PREFIX:-/opt/homebrew/opt/openal-soft}
 
 case "$ARCH" in
-  arm64|aarch64) ARCH=arm64; FLAGS="-arch arm64" ;;
+  arm64|aarch64) ARCH=arm64; FLAGS="-arch arm64"
+    # a call that only exists on a macOS newer than OM_MACOS_MIN is a build error, not a crash on the player's Mac
+    CFLAGS_MIN="-Werror=unguarded-availability" ;;
   *) echo "unknown arch '$ARCH' (only arm64; Intel Macs are not a target)" >&2; exit 2 ;;
 esac
 
@@ -52,8 +59,8 @@ configure() { # <source> <build> [extra args]
     fresh=--fresh
   fi
   cmake $fresh -S "$src" -B "$bld" -G Ninja -DCMAKE_BUILD_TYPE="$CFG" \
-    -DCMAKE_OSX_ARCHITECTURES="$ARCH" \
-    -DCMAKE_C_FLAGS="$FLAGS" -DCMAKE_CXX_FLAGS="$FLAGS" \
+    -DCMAKE_OSX_ARCHITECTURES="$ARCH" -DCMAKE_OSX_DEPLOYMENT_TARGET="$MIN" \
+    -DCMAKE_C_FLAGS="$FLAGS $CFLAGS_MIN" -DCMAKE_CXX_FLAGS="$FLAGS $CFLAGS_MIN" \
     -DCMAKE_EXE_LINKER_FLAGS="$FLAGS" -DCMAKE_MODULE_LINKER_FLAGS="$FLAGS" \
     -DCMAKE_SHARED_LINKER_FLAGS="$FLAGS" "$@"
   cmake --build "$bld" -j "$JOBS"
