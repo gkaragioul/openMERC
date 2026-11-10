@@ -1,11 +1,24 @@
 # Building OpenMerc on macOS (Apple Silicon)
 
-Status 2026-10-29: **engine, renderer and game/player modules build for arm64 and the engine runs**
-on macOS 27.0.1 (26A434) with Apple clang 21 and Homebrew SDL3 3.4.18. The engine reaches game-data
-initialisation and stops with `Could not open string package 'str_server'` because no game data is
-present on this host; that is the expected missing-data failure, not a porting defect. With game data
-extracted, the engine loads `ref_metal` and renders the M1–M4 paths described in `docs/METAL.md`.
-The aggregate build is green: `sofpm_test` 360/0, `omghoul_test` passes, Ghoul 175/0.
+Status 2026-11-10: **the engine, the Metal renderer and the game/player modules build for arm64 and the game
+plays** on macOS 27.2 with Apple clang and Homebrew SDL3. All 32 campaign levels load and run with `ref_metal`
+(see `docs/METAL.md`). The build is green: `sofpm_test` 360/0, Ghoul 176/0. Without game data the engine stops at
+`Could not open string package 'str_server'`; that is the expected missing-data message.
+
+## Play
+
+openMERC contains no game files. Copy the `.pak` files of your own copy of the game (`pak0.pak` ... `pak3.pak`,
+`gs.pak`) into `game-data/sof/base` in this folder (git-ignored), then:
+
+```sh
+tools/build/build-macos.sh                 # builds into build-macos-arm64-Release/release
+tools/build/make-macos-app.sh --install    # "Soldier of Fortune.app" in /Applications, with your game data inside
+```
+
+The app is a private build for your own copy of the game: it carries your game files, so never publish or share
+it. Settings and saves go to `~/Library/Application Support/Soldier of Fortune/user`, the log of the last run to
+`~/Library/Logs/Soldier of Fortune/last-run.log`. An app icon is optional: `tools/build/macos/AppIcon.icns`
+(git-ignored) is used when present.
 
 ## What works
 
@@ -94,7 +107,9 @@ A build tree configured in another folder (the project was moved) is configured 
 
 ## Not done yet
 
-- App bundle, codesigning, notarisation, universal binary.
+- A ready-made download: the app is ad-hoc signed and built with your own game data; there is no notarised,
+  data-free app that asks for the game on first start. No universal binary; the binaries target the macOS they
+  are built on.
 - Mode A (original 32-bit `gamex86.dll`/`player.dll`) is impossible on macOS; this port is
   mode B only.
 - Full M5 post chain (bloom/emissive, soft particles, MSAA): see `docs/METAL.md` for what is done.
